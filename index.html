@@ -277,7 +277,7 @@ window.doLogin = async function() {
   const err  = document.getElementById('login-err');
   err.style.display='none';
   if(!id){err.textContent='Выберите имя';err.style.display='block';return}
-  const user = USERS.find(u=>u.id===id && u.pass===pass);
+  const user = USERS.find(u=>u.id===id && String(u.pass)===String(pass));
   if(!user){err.textContent='Неверный пароль';err.style.display='block';return}
   document.getElementById('login-pass').value='';
   CU = user;
