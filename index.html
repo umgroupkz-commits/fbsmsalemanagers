@@ -192,20 +192,20 @@ function barCol(p){
   if(p>=1.4)return'#639922';if(p>=1.0)return'#185FA5';if(p>=.8)return'#BA7517';return'#A32D2D'
 }
 function getRank(p){
-  if(p>=1.4)return{lbl:'Чемпион',   ic:'🏆',col:'#BA7517',bg:'#FAEEDA'}
-  if(p>=1.0)return{lbl:'Эксперт',   ic:'⭐',col:'#185FA5',bg:'#E6F1FB'}
-  if(p>=0.8)return{lbl:'Специалист',ic:'💎',col:'#3B6D11',bg:'#EAF3DE'}
-  if(p>=0.5)return{lbl:'Продавец',  ic:'📈',col:'#533F2E',bg:'#F1EFE8'}
-  return           {lbl:'Стажёр',   ic:'🌱',col:'#888780',bg:'#F1EFE8'}
+  if(p>=1.4)return{lbl:'Легенда', ic:'🏆',col:'#BA7517',bg:'#FAEEDA'}
+  if(p>=1.0)return{lbl:'Мастер',  ic:'⭐',col:'#185FA5',bg:'#E6F1FB'}
+  if(p>=0.8)return{lbl:'Самурай', ic:'⚔️',col:'#3B6D11',bg:'#EAF3DE'}
+  if(p>=0.5)return{lbl:'Падаван', ic:'🌀',col:'#533F2E',bg:'#F1EFE8'}
+  return           {lbl:'Искатель',ic:'🌱',col:'#888780',bg:'#F1EFE8'}
 }
 function rankChip(p){const r=getRank(p);return`<span class="rank" style="background:${r.bg};color:${r.col}">${r.ic} ${r.lbl}</span>`}
 function motiv(p){
-  if(p>=1.4)return'🏆 Феноменально! 140%+ — ты абсолютный чемпион этого месяца!'
-  if(p>=1.2)return'⭐ Уже за 120%! До звания Чемпиона — совсем чуть-чуть!'
-  if(p>=1.0)return'✅ План выполнен! Каждая продажа теперь — +3% к зарплате!'
-  if(p>=0.8)return'💪 80%+ пройдено! Следующая цель — 100%. Ты уже близко!'
-  if(p>=0.5)return'📈 Хороший темп! До уровня 80% — рукой подать.'
-  return'🚀 Начало пути! Введи продажи и смотри, как растёт зарплата!'
+  if(p>=1.4)return'🏆 Легенда! 140%+ — ты вошёл в историю этого месяца!'
+  if(p>=1.2)return'⭐ Уже Мастер и не останавливаешься! До Легенды — совсем чуть-чуть!'
+  if(p>=1.0)return'✅ Самурай выполнил план! Каждая продажа теперь — +3% к зарплате!'
+  if(p>=0.8)return'⚔️ Самурай в деле! Следующая цель — 100% и звание Мастера!'
+  if(p>=0.5)return'🌀 Падаван на пути! До уровня Самурая — рукой подать.'
+  return'🌱 Путь Искателя начался! Введи продажи и смотри, как растёт зарплата!'
 }
 
 function calcZP(sales, checks, units, pct, p) {
@@ -226,7 +226,7 @@ function calcZP(sales, checks, units, pct, p) {
 
 function getPlan(uid, mk) {
   const all = window._plans || [];
-  const r = all.find(p=>p.uid===uid && p.mk===mk);
+  const r = all.find(p=>String(p.uid)===String(uid) && String(p.mk)===String(mk));
   return r ? parseFloat(r.amount)||0 : 0;
 }
 
@@ -340,9 +340,11 @@ window.pgDashboard = async function() {
   nav('pgDashboard'); setTitle('Мой дашборд');
   setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
   L(true);
-  window._sales = await api('getSales',{uid:CU.id});
-  window._plans = await api('getPlans',{});
-  PARAMS = await api('getParams');
+  [window._sales, window._plans, PARAMS] = await Promise.all([
+    api('getSales',{uid:CU.id}),
+    api('getPlans',{}),
+    api('getParams')
+  ]);
   L(false);
 
   const mk   = curMk();
@@ -363,12 +365,15 @@ window.pgDashboard = async function() {
   .forEach(st=>{
     const need=Math.max(0,plan*st.p-ts);
     const bar=Math.min(100,plan>0?ts/(plan*st.p)*100:0);
-    stages+=`<div style="margin-bottom:10px">
+    const scenSales=plan>0?plan*st.p:ts;
+    const scenZP=calcZP(scenSales,tc,tu,st.p);
+    stages+=`<div style="margin-bottom:12px">
       <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
         <span style="color:${st.col};font-weight:600">До ${st.lbl}</span>
         <span style="color:var(--muted)">${need>0?'ещё '+fmt(need):'✓ Выполнено'}</span>
       </div>
       <div class="pb"><div class="pf" style="width:${bar}%;background:${st.col}"></div></div>
+      <div style="font-size:12px;color:${st.col};margin-top:3px">ЗП при ${st.lbl}: <b>${fmt(scenZP.total)}</b></div>
     </div>`;
   });
 
@@ -456,7 +461,7 @@ window.pgEnter = function() {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-p" onclick="saveEntry()">Сохранить</button>
-        <button class="btn" onclick="loadForDate()">Загрузить за дату</button>
+        <button class="btn" onclick="loadForDate()">Редактировать запись за дату</button>
       </div>
     </div>`);
 }
