@@ -210,16 +210,16 @@ function motiv(p){
 
 function calcZP(sales, checks, units, pct, p) {
   p = p || PARAMS;
-  const oklad = (p.shifts||15)*(p.rate||6000);
-  const base  = sales*(p.base||0.01);
-  const a80   = pct>=0.8  ? sales*(p.p80||0.005)  : 0;
-  const a100  = pct>=1.0  ? sales*(p.p100||0.015) : 0;
-  const a140  = pct>=1.4  ? sales*(p.p140||0.03)  : 0;
-  const bMag  = pct>=1.0  ? (p.bMag||10000) : 0;
+  const oklad = (parseFloat(p.shifts)||15)*(parseFloat(p.rate)||6000);
+  const base  = sales*(parseFloat(p.base)||0.01);
+  const a80   = pct>=0.8  ? sales*(parseFloat(p.p80)||0.005)  : 0;
+  const a100  = pct>=1.0  ? sales*(parseFloat(p.p100)||0.015) : 0;
+  const a140  = pct>=1.4  ? sales*(parseFloat(p.p140)||0.03)  : 0;
+  const bMag  = pct>=1.0  ? (parseFloat(p.bMag)||10000) : 0;
   const avg   = checks>0  ? sales/checks : 0;
   const upt   = checks>0  ? units/checks : 0;
-  const bk1   = avg>=(p.avgNorm||15000) ? (p.bKpi||10000) : 0;
-  const bk2   = upt>=(p.uptNorm||2.5)   ? (p.bKpi||10000) : 0;
+  const bk1   = avg>=(parseFloat(p.avgNorm)||15000) ? (parseFloat(p.bKpi)||10000) : 0;
+  const bk2   = upt>=(parseFloat(p.uptNorm)||2.5)   ? (parseFloat(p.bKpi)||10000) : 0;
   return {oklad,base,a80,a100,a140,bMag,bk1,bk2,
           total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
 }
@@ -424,8 +424,8 @@ window.pgDashboard = async function() {
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div><div style="font-size:11px;color:var(--muted)">UPT</div>
                <div style="font-size:20px;font-weight:700">${upt.toFixed(2)}</div>
-               <div style="font-size:11px;color:var(--muted)">норма: ${(PARAMS.uptNorm||2.5).toFixed(1)}</div></div>
-          <div>${upt>=(PARAMS.uptNorm||2.5)?`<span class="tag ts">+${fmt(PARAMS.bKpi||10000)}</span>`:`<span class="tag tw">${upt.toFixed(2)} / ${(PARAMS.uptNorm||2.5).toFixed(1)}</span>`}</div>
+               <div style="font-size:11px;color:var(--muted)">норма: ${parseFloat(PARAMS.uptNorm||2.5).toFixed(1)}</div></div>
+          <div>${upt>=parseFloat(PARAMS.uptNorm||2.5)?`<span class="tag ts">+${fmt(PARAMS.bKpi||10000)}</span>`:`<span class="tag tw">${upt.toFixed(2)} / ${parseFloat(PARAMS.uptNorm||2.5).toFixed(1)}</span>`}</div>
         </div>
       </div>
       <div class="card" style="margin:0">
