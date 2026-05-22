@@ -226,7 +226,15 @@ function calcZP(sales, checks, units, pct, p) {
 
 function getPlan(uid, mk) {
   const all = window._plans || [];
-  const r = all.find(p=>String(p.uid)===String(uid) && String(p.mk)===String(mk));
+  // normalize mk: extract yyyy-mm from any format (handles Date objects from Sheets)
+  function normMk(v){
+    if(!v) return '';
+    const s = String(v);
+    // if ISO date like 2026-05-01T... or 2026-05-01, extract yyyy-mm
+    const m = s.match(/^(\d{4}-\d{2})/);
+    return m ? m[1] : s;
+  }
+  const r = all.find(p=>String(p.uid)===String(uid) && normMk(p.mk)===normMk(mk));
   return r ? parseFloat(r.amount)||0 : 0;
 }
 
