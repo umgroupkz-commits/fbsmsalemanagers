@@ -1,248 +1,987 @@
-// ══════════════════════════════════════════════════════
-// FBSM — Google Apps Script Backend
-// Таблица: 16ZnbbrqBvFWOtjkAATY-0ZeU4EAgU6CaAOc7BbTluTs
-// Листы: users, plans, sales, params
-// ══════════════════════════════════════════════════════
-
-const SS_ID = '16ZnbbrqBvFWOtjkAATY-0ZeU4EAgU6CaAOc7BbTluTs';
-const SS = SpreadsheetApp.openById(SS_ID);
-
-// ── Получить или создать лист ──
-function getSheet(name) {
-  let sh = SS.getSheetByName(name);
-  if (!sh) {
-    sh = SS.insertSheet(name);
-    // Заголовки по листам
-    const headers = {
-      users:  ['id','name','shop','role','pass'],
-      plans:  ['key','uid','mk','amount'],
-      sales:  ['key','uid','date','sales','checks','units'],
-      params: ['key','value'],
-    };
-    if (headers[name]) sh.appendRow(headers[name]);
-  }
-  return sh;
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FBSM — Система учёта продаж</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f5f3;--surface:#fff;--surface2:#f0eeea;
+  --text:#1a1a1a;--muted:#6b6b68;--border:#e0ded8;
+  --blue:#185FA5;--blue-l:#E6F1FB;--blue-d:#0C447C;
+  --green:#3B6D11;--green-l:#EAF3DE;
+  --amber:#BA7517;--amber-l:#FAEEDA;
+  --red:#A32D2D;--red-l:#FCEBEB;
+  --r:10px;--rs:6px;
 }
-
-// ── Инициализация: создать листы и дефолтные данные ──
-function initSheets() {
-  ['users','plans','sales','params'].forEach(getSheet);
-
-  const us = getSheet('users');
-  if (us.getLastRow() <= 1) {
-    us.appendRow(['admin1',   'Главный Администратор', '',            'admin',   'admin123']);
-    us.appendRow(['mgr_krg',  'Управляющий Карагандой','Караганда',   'manager', 'mgr123']);
-    us.appendRow(['s1',       'Иванова А.А.',           'Караганда',   'seller',  '1234']);
-    us.appendRow(['s2',       'Петрова Б.Б.',           'Алматы',      'seller',  '1234']);
-  }
-
-  const ps = getSheet('params');
-  if (ps.getLastRow() <= 1) {
-    const defaults = [
-      ['rate','6000'],['shifts','15'],
-      ['base','0.01'],['p80','0.005'],['p100','0.015'],['p140','0.03'],
-      ['bMag','10000'],['bKpi','10000'],
-      ['avgNorm','15000'],['uptNorm','2.5'],
-    ];
-    defaults.forEach(r => ps.appendRow(r));
-  }
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:15px}
+.screen{display:none;min-height:100vh}.screen.active{display:block}
+.auth-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem}
+.auth-card{background:var(--surface);border-radius:var(--r);border:1px solid var(--border);padding:2rem;width:100%;max-width:360px}
+.brand{font-size:28px;font-weight:700;letter-spacing:2px;color:var(--blue-d);text-align:center}
+.sub{font-size:13px;color:var(--muted);text-align:center;margin:4px 0 1.5rem}
+.layout{display:flex;min-height:100vh}
+.sb{width:220px;background:var(--blue-d);color:#fff;flex-shrink:0;display:flex;flex-direction:column}
+.sb-logo{padding:1.25rem 1rem;font-size:18px;font-weight:700;letter-spacing:1px;border-bottom:1px solid rgba(255,255,255,.1)}
+.sb-user{padding:.75rem 1rem;font-size:12px;color:rgba(255,255,255,.6);border-bottom:1px solid rgba(255,255,255,.1)}
+.sb-user strong{display:block;color:#fff;font-size:13px;margin-bottom:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:.75rem 1rem;font-size:14px;color:rgba(255,255,255,.75);cursor:pointer;border:none;background:none;width:100%;text-align:left;border-left:3px solid transparent}
+.nav-item:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-item.active{background:rgba(255,255,255,.12);color:#fff;border-left-color:#fff}
+.sb-bottom{margin-top:auto;padding:1rem;border-top:1px solid rgba(255,255,255,.1)}
+.main{flex:1;overflow-y:auto}
+.main-hdr{background:var(--surface);border-bottom:1px solid var(--border);padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between}
+.main-title{font-size:17px;font-weight:600}
+.content{padding:1.5rem}
+@media(max-width:640px){
+  .layout{flex-direction:column}
+  .sb{width:100%;flex-direction:row;flex-wrap:wrap}
+  .sb-logo{flex:1}.sb-user{display:none}
+  .nav-item{padding:.5rem .75rem;font-size:12px;border-left:none;border-bottom:3px solid transparent}
+  .nav-item.active{border-bottom-color:#fff;border-left:none}
+  .sb-bottom{padding:.5rem}
+  .content{padding:1rem}
 }
+.card{background:var(--surface);border-radius:var(--r);border:1px solid var(--border);padding:1.25rem;margin-bottom:1rem}
+.card-title{font-size:15px;font-weight:600;margin-bottom:1rem}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem}
+@media(max-width:640px){.g2,.g3,.g4{grid-template-columns:1fr 1fr}}
+.metric{background:var(--surface2);border-radius:var(--rs);padding:1rem;text-align:center}
+.m-val{font-size:22px;font-weight:700;margin-top:4px;line-height:1}
+.m-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-weight:500;cursor:pointer;transition:all .15s}
+.btn:hover{background:var(--surface2)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-p{background:var(--blue);color:#fff;border-color:var(--blue)}.btn-p:hover{background:var(--blue-d)}
+.btn-d{color:var(--red);border-color:var(--red)}.btn-d:hover{background:var(--red-l)}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn-block{width:100%;justify-content:center}
+.fg{margin-bottom:.75rem}
+.fl{font-size:13px;color:var(--muted);display:block;margin-bottom:4px;font-weight:500}
+.fc{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--rs);background:var(--surface);color:var(--text);font-size:14px}
+.fc:focus{outline:none;border-color:var(--blue)}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+@media(max-width:400px){.fr{grid-template-columns:1fr}}
+.pb{background:var(--surface2);border-radius:100px;height:8px;overflow:hidden;margin:6px 0}
+.pf{height:100%;border-radius:100px;transition:width .5s}
+.tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:100px;font-size:11px;font-weight:600}
+.ts{background:var(--green-l);color:var(--green)}
+.tw{background:var(--amber-l);color:var(--amber)}
+.td{background:var(--red-l);color:var(--red)}
+.ti{background:var(--blue-l);color:var(--blue-d)}
+.tw-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:var(--surface2);padding:8px 10px;text-align:left;font-weight:600;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--surface2)}
+.alert{padding:10px 14px;border-radius:var(--rs);font-size:13px;margin-bottom:.75rem}
+.a-s{background:var(--green-l);color:var(--green)}
+.a-e{background:var(--red-l);color:var(--red)}
+.a-i{background:var(--blue-l);color:var(--blue-d)}
+.motiv{background:var(--blue-l);border:1px solid #B5D4F4;border-radius:var(--r);padding:1rem;margin-bottom:1rem;font-size:14px;color:var(--blue-d)}
+.zpr{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--border);font-size:12px;color:var(--muted)}
+.zpr:last-child{border:none;font-weight:600;color:var(--text);font-size:13px}
+.rank{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:100px;font-size:12px;font-weight:600}
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:center;justify-content:center;padding:1rem}
+.ov-card{background:var(--surface);border-radius:var(--r);padding:1.5rem;width:100%;max-width:560px;max-height:85vh;overflow-y:auto}
+.spin{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:sp .6s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.loading{position:fixed;inset:0;background:rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;z-index:999;gap:10px;font-size:14px;color:var(--muted)}
+</style>
+</head>
+<body>
 
-// ── Читать весь лист как массив объектов ──
-function sheetToObjects(name) {
-  const sh = getSheet(name);
-  const data = sh.getDataRange().getValues();
-  if (data.length <= 1) return [];
-  const headers = data[0];
-  return data.slice(1).map(row => {
-    const obj = {};
-    headers.forEach((h, i) => obj[h] = row[i]);
-    return obj;
-  });
-}
+<div id="loader" class="loading"><div class="spin"></div> Загрузка...</div>
 
-// ── Найти строку по значению в колонке ──
-function findRow(sheetName, col, val) {
-  const sh = getSheet(sheetName);
-  const data = sh.getDataRange().getValues();
-  const headers = data[0];
-  const colIdx = headers.indexOf(col);
-  if (colIdx < 0) return -1;
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][colIdx]) === String(val)) return i + 1; // 1-based
-  }
-  return -1;
-}
+<!-- LOGIN -->
+<div id="screen-login" class="screen">
+  <div class="auth-wrap">
+    <div class="auth-card">
+      <div class="brand">FBSM</div>
+      <div class="sub">Система учёта продаж</div>
+      <div id="login-err" class="alert a-e" style="display:none"></div>
+      <div class="fg"><label class="fl">Выберите имя</label>
+        <select id="login-name" class="fc"><option value="">— выберите —</option></select>
+      </div>
+      <div class="fg"><label class="fl">Пароль</label>
+        <input type="password" id="login-pass" class="fc" placeholder="Введите пароль">
+      </div>
+      <button id="login-btn" class="btn btn-p btn-block" onclick="doLogin()">Войти</button>
+    </div>
+  </div>
+</div>
 
-// ── Upsert строку (вставить или обновить по ключу) ──
-function upsertRow(sheetName, keyCol, keyVal, rowObj) {
-  const sh = getSheet(sheetName);
-  const data = sh.getDataRange().getValues();
-  const headers = data[0];
-  const keyIdx = headers.indexOf(keyCol);
-  const newRow = headers.map(h => rowObj[h] !== undefined ? rowObj[h] : '');
+<!-- APP -->
+<div id="screen-app" class="screen">
+  <div class="layout">
+    <div class="sb">
+      <div class="sb-logo">FBSM</div>
+      <div class="sb-user"><strong id="sb-name">—</strong><span id="sb-shop">—</span></div>
+      <div id="sb-nav"></div>
+      <div class="sb-bottom">
+        <button class="btn btn-sm btn-block" style="color:#fff;border-color:rgba(255,255,255,.3);background:transparent" onclick="doLogout()">Выйти</button>
+      </div>
+    </div>
+    <div class="main">
+      <div class="main-hdr">
+        <span class="main-title" id="main-title">—</span>
+        <span id="main-badge"></span>
+      </div>
+      <div class="content" id="content"></div>
+    </div>
+  </div>
+</div>
 
-  for (let i = 1; i < data.length; i++) {
-    if (String(data[i][keyIdx]) === String(keyVal)) {
-      sh.getRange(i + 1, 1, 1, headers.length).setValues([newRow]);
-      return;
-    }
-  }
-  sh.appendRow(newRow);
-}
+<script>
+// ══ CONFIG ══
+// Замени на URL своего задеплоенного Apps Script
+const API = 'https://script.google.com/macros/s/AKfycbyj3GZzlo1LMHhxbw01kWMiS_rG5u4kwmDt7kXNv4J0T2KeU4UO98Xrsi0KpUvCtGRs/exec';
 
-// ── Удалить строку по ключу ──
-function deleteRow(sheetName, keyCol, keyVal) {
-  const sh = getSheet(sheetName);
-  const data = sh.getDataRange().getValues();
-  const headers = data[0];
-  const keyIdx = headers.indexOf(keyCol);
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][keyIdx]) === String(keyVal)) {
-      sh.deleteRow(i + 1);
-      return true;
-    }
-  }
-  return false;
-}
+const SHOPS = ['Караганда','Алматы','Асфендиярова','Манаса','Республика'];
 
-// ══════════════════════════════════════════════════════
-// ROUTER
-// ══════════════════════════════════════════════════════
-function doGet(e) {
-  return handleRequest(e);
-}
-function doPost(e) {
-  return handleRequest(e);
-}
+let CU = null;       // current user
+let PARAMS = {};
+let USERS  = [];
 
-function handleRequest(e) {
+// ══ API ══
+async function api(action, data={}) {
+  const url = API + '?action=' + action + '&' + new URLSearchParams(data).toString();
   try {
-    initSheets();
-    const p = e.parameter || {};
-    const action = p.action || (e.postData ? JSON.parse(e.postData.contents).action : '');
-    const body   = e.postData ? JSON.parse(e.postData.contents) : p;
+    const r = await fetch(url, {redirect:'follow'});
+    const j = await r.json();
+    if(j.error) throw new Error(j.error);
+    return j;
+  } catch(e) {
+    console.error(action, e);
+    throw e;
+  }
+}
 
-    let result;
-    switch (action) {
-      case 'getUsers':   result = getUsers();            break;
-      case 'addUser':    result = addUser(body);         break;
-      case 'deleteUser': result = deleteUser(body);      break;
-      case 'getParams':  result = getParams();           break;
-      case 'saveParams': result = saveParams(body);      break;
-      case 'getPlans':   result = getPlans(body);        break;
-      case 'savePlan':   result = savePlan(body);        break;
-      case 'getSales':   result = getSales(body);        break;
-      case 'saveSale':   result = saveSale(body);        break;
-      case 'deleteSale': result = deleteSaleEntry(body); break;
-      default:           result = {error: 'Unknown action: ' + action};
+async function apiPost(action, data={}) {
+  try {
+    const r = await fetch(API, {
+      method:'POST', redirect:'follow',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action, ...data})
+    });
+    const j = await r.json();
+    if(j.error) throw new Error(j.error);
+    return j;
+  } catch(e) {
+    // fallback: GET с параметрами
+    return api(action, data);
+  }
+}
+
+// ══ UTILS ══
+function fmt(n){return Math.round(n||0).toLocaleString('ru-RU')+'₸'}
+function fmtN(n){return Math.round(n||0).toLocaleString('ru-RU')}
+function today(){return new Date().toISOString().slice(0,10)}
+function curMk(){return today().slice(0,7)}
+function daysInMk(mk){const[y,m]=mk.split('-');return new Date(+y,+m,0).getDate()}
+function L(on){document.getElementById('loader').style.display=on?'flex':'none'}
+function setTitle(t){document.getElementById('main-title').textContent=t}
+function setBadge(h){document.getElementById('main-badge').innerHTML=h}
+function setContent(h){document.getElementById('content').innerHTML=h}
+
+function barCol(p){
+  if(p>=1.4)return'#639922';if(p>=1.0)return'#185FA5';if(p>=.8)return'#BA7517';return'#A32D2D'
+}
+function getRank(p){
+  if(p>=1.4)return{lbl:'Легенда', ic:'🏆',col:'#BA7517',bg:'#FAEEDA'}
+  if(p>=1.0)return{lbl:'Мастер',  ic:'⭐',col:'#185FA5',bg:'#E6F1FB'}
+  if(p>=0.8)return{lbl:'Самурай', ic:'⚔️',col:'#3B6D11',bg:'#EAF3DE'}
+  if(p>=0.5)return{lbl:'Падаван', ic:'🌀',col:'#533F2E',bg:'#F1EFE8'}
+  return           {lbl:'Искатель',ic:'🌱',col:'#888780',bg:'#F1EFE8'}
+}
+function rankChip(p){const r=getRank(p);return`<span class="rank" style="background:${r.bg};color:${r.col}">${r.ic} ${r.lbl}</span>`}
+function motiv(p){
+  if(p>=1.4)return'🏆 Легенда! 140%+ — ты вошёл в историю этого месяца!'
+  if(p>=1.2)return'⭐ Уже Мастер и не останавливаешься! До Легенды — совсем чуть-чуть!'
+  if(p>=1.0)return'✅ Самурай выполнил план! Каждая продажа теперь — +3% к зарплате!'
+  if(p>=0.8)return'⚔️ Самурай в деле! Следующая цель — 100% и звание Мастера!'
+  if(p>=0.5)return'🌀 Падаван на пути! До уровня Самурая — рукой подать.'
+  return'🌱 Путь Искателя начался! Введи продажи и смотри, как растёт зарплата!'
+}
+
+function calcZP(sales, checks, units, pct, p) {
+  p = p || PARAMS;
+  const oklad = (parseFloat(p.shifts)||15)*(parseFloat(p.rate)||6000);
+  const base  = sales*(parseFloat(p.base)||0.01);
+  const a80   = pct>=0.8  ? sales*(parseFloat(p.p80)||0.005)  : 0;
+  const a100  = pct>=1.0  ? sales*(parseFloat(p.p100)||0.015) : 0;
+  const a140  = pct>=1.4  ? sales*(parseFloat(p.p140)||0.03)  : 0;
+  const bMag  = pct>=1.0  ? (parseFloat(p.bMag)||10000) : 0;
+  const avg   = checks>0  ? sales/checks : 0;
+  const upt   = checks>0  ? units/checks : 0;
+  const bk1   = avg>=(parseFloat(p.avgNorm)||15000) ? (parseFloat(p.bKpi)||10000) : 0;
+  const bk2   = upt>=(parseFloat(p.uptNorm)||2.5)   ? (parseFloat(p.bKpi)||10000) : 0;
+  return {oklad,base,a80,a100,a140,bMag,bk1,bk2,
+          total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
+}
+
+function getPlan(uid, mk) {
+  const all = window._plans || [];
+  // normalize mk: extract yyyy-mm from any format (handles Date objects from Sheets)
+  function normMk(v){
+    if(!v) return '';
+    const s = String(v);
+    // if ISO date like 2026-05-01T... or 2026-05-01, extract yyyy-mm
+    const m = s.match(/^(\d{4}-\d{2})/);
+    return m ? m[1] : s;
+  }
+  const r = all.find(p=>String(p.uid)===String(uid) && normMk(p.mk)===normMk(mk));
+  return r ? parseFloat(r.amount)||0 : 0;
+}
+
+function getSales(uid, mk) {
+  const all = window._sales || [];
+  return all.filter(s=>{
+    if(s.uid !== uid) return false;
+    // normalize date: handles both '2026-05-22' and '2026-05-22T00:00:00.000Z'
+    const d = String(s.date).slice(0,10);
+    return d.startsWith(mk);
+  });
+}
+
+// ══ INIT ══
+async function init() {
+  L(true);
+  if(API === 'SCRIPT_URL_HERE') {
+    document.getElementById('loader').innerHTML =
+      '<div style="text-align:center;max-width:400px;padding:2rem">' +
+      '<b style="font-size:16px">Нужно настроить URL скрипта</b>' +
+      '<p style="margin-top:8px;color:#6b6b68;font-size:13px">Замени SCRIPT_URL_HERE в HTML на URL задеплоенного Apps Script</p></div>';
+    return;
+  }
+  try {
+    [USERS, PARAMS] = await Promise.all([api('getUsers'), api('getParams')]);
+    populateLoginSelect();
+  } catch(e) {
+    document.getElementById('loader').innerHTML =
+      '<div style="text-align:center;color:#A32D2D"><b>Ошибка подключения</b><br><small>'+e.message+'</small></div>';
+    return;
+  }
+  L(false);
+  showScreen('login');
+}
+
+function populateLoginSelect() {
+  const sel = document.getElementById('login-name');
+  sel.innerHTML = '<option value="">— выберите —</option>';
+  [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{
+    sel.innerHTML += `<option value="${u.id}">${u.name}</option>`;
+  });
+}
+
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('screen-'+name).classList.add('active');
+}
+
+// ══ AUTH ══
+window.doLogin = async function() {
+  const id   = document.getElementById('login-name').value;
+  const pass = document.getElementById('login-pass').value;
+  const err  = document.getElementById('login-err');
+  err.style.display='none';
+  if(!id){err.textContent='Выберите имя';err.style.display='block';return}
+  const user = USERS.find(u=>u.id===id && String(u.pass)===String(pass));
+  if(!user){err.textContent='Неверный пароль';err.style.display='block';return}
+  document.getElementById('login-pass').value='';
+  CU = user;
+  document.getElementById('sb-name').textContent  = CU.name;
+  document.getElementById('sb-shop').textContent  = CU.shop || 'Администратор';
+
+  // Предзагрузка данных
+  L(true);
+  try {
+    const mk = curMk();
+    window._plans = await api('getPlans',{});
+    if(CU.role==='seller') {
+      window._sales = await api('getSales',{uid:CU.id});
+    } else {
+      window._sales = await api('getSales',{});
     }
-    return jsonResponse(result);
-  } catch(err) {
-    return jsonResponse({error: err.message});
+  } catch(e){}
+  L(false);
+
+  setupSidebar();
+  showScreen('app');
+}
+
+window.doLogout = function(){CU=null;showScreen('login')}
+
+// ══ SIDEBAR ══
+function setupSidebar() {
+  const items = CU.role==='seller'
+    ? [{ic:'📊',lbl:'Дашборд',fn:'pgDashboard'},{ic:'➕',lbl:'Ввод продаж',fn:'pgEnter'},
+       {ic:'📋',lbl:'История',fn:'pgHistory'},{ic:'🏆',lbl:'Рейтинг',fn:'pgRating'}]
+    : [{ic:'📊',lbl:'Сводка',fn:'pgReport'},{ic:'💰',lbl:'Начисление ЗП',fn:'pgPayroll'},
+       {ic:'👤',lbl:'Сотрудники',fn:'pgSellers'},{ic:'🎯',lbl:'Планы',fn:'pgPlans'},
+       {ic:'⚙️',lbl:'Параметры',fn:'pgParams'}];
+  document.getElementById('sb-nav').innerHTML =
+    items.map(i=>`<button class="nav-item" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:18px">${i.ic}</span>${i.lbl}</button>`).join('');
+  if(CU.role==='seller') pgDashboard(); else pgReport();
+}
+
+function nav(fn) {
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  const el=document.getElementById('n-'+fn);
+  if(el) el.classList.add('active');
+}
+
+// ══ MONTHS SELECT ══
+function monthsOptions(past=6, future=0, defaultCurrent=true) {
+  const now=new Date();
+  const curMkVal=now.toISOString().slice(0,7);
+  let months=[];
+  // Past months (including current)
+  for(let i=0;i<past;i++){
+    const d=new Date(now.getFullYear(),now.getMonth()-i,1);
+    months.push({mk:d.toISOString().slice(0,7), lbl:d.toLocaleDateString('ru-RU',{month:'long',year:'numeric'})});
+  }
+  // Future months
+  for(let i=1;i<=future;i++){
+    const d=new Date(now.getFullYear(),now.getMonth()+i,1);
+    months.push({mk:d.toISOString().slice(0,7), lbl:d.toLocaleDateString('ru-RU',{month:'long',year:'numeric'})});
+  }
+  // Sort: future first, then current, then past
+  months.sort((a,b)=>b.mk.localeCompare(a.mk));
+  return months.map(m=>`<option value="${m.mk}" ${m.mk===curMkVal?'selected':''}>${m.lbl}</option>`).join('');
+}
+
+// ══════════════════════════════════════
+// ПРОДАВЕЦ
+// ══════════════════════════════════════
+window.pgDashboard = async function() {
+  nav('pgDashboard'); setTitle('Мой дашборд');
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  L(true);
+  [window._sales, window._plans, PARAMS] = await Promise.all([
+    api('getSales',{uid:CU.id}),
+    api('getPlans',{}),
+    api('getParams')
+  ]);
+  L(false);
+
+  const mk   = curMk();
+  const plan = getPlan(CU.id, mk);
+  const entries = getSales(CU.id, mk);
+  let ts=0,tc=0,tu=0; entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+
+  const pct = plan>0 ? ts/plan : 0;
+  const zp  = calcZP(ts,tc,tu,pct);
+  const rk  = getRank(pct);
+  setBadge(rankChip(pct));
+
+  const now=new Date();
+  const dLeft = daysInMk(mk)-now.getDate();
+
+  let stages='';
+  [{p:.8,lbl:'80%',col:'#BA7517'},{p:1,lbl:'100%',col:'#185FA5'},{p:1.4,lbl:'140%',col:'#639922'}]
+  .forEach(st=>{
+    const need=Math.max(0,plan*st.p-ts);
+    const bar=Math.min(100,plan>0?ts/(plan*st.p)*100:0);
+    const scenSales=plan>0?plan*st.p:ts;
+    const scenZP=calcZP(scenSales,tc,tu,st.p);
+    stages+=`<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+        <span style="color:${st.col};font-weight:600">До ${st.lbl}</span>
+        <span style="color:var(--muted)">${need>0?'ещё '+fmt(need):'✓ Выполнено'}</span>
+      </div>
+      <div class="pb"><div class="pf" style="width:${bar}%;background:${st.col}"></div></div>
+      <div style="font-size:12px;color:${st.col};margin-top:3px">ЗП при ${st.lbl}: <b>${fmt(scenZP.total)}</b></div>
+    </div>`;
+  });
+
+  let zpHtml='';
+  [['Оклад',zp.oklad],['% от продаж',zp.base],['Доб.% 80%',zp.a80],
+   ['Доб.% 100%',zp.a100],['Доб.% 140%',zp.a140],
+   ['Бонус план',zp.bMag],['Бонус KPI (ср.чек)',zp.bk1],['Бонус KPI (UPT)',zp.bk2],
+   ['ИТОГО',zp.total]].forEach(([l,v])=>{
+    zpHtml+=`<div class="zpr"><span>${l}</span><span>${fmt(v)}</span></div>`;
+  });
+
+  let daily='';
+  if(dLeft>0&&plan>0){
+    [{p:1,l:'100%'},{p:1.4,l:'140%'}].forEach(t=>{
+      const need=Math.max(0,plan*t.p-ts);
+      daily+=`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:13px">
+        <span>До ${t.l}</span><b>${need>0?fmt(need/dLeft)+'/день':'✓ Готово'}</b></div>`;
+    });
+    daily+=`<div style="font-size:11px;color:var(--muted);margin-top:5px">Осталось дней в месяце: ${dLeft}</div>`;
+  } else daily=`<span style="color:var(--muted);font-size:13px">${plan===0?'План не установлен':'Месяц завершён'}</span>`;
+
+  let scen='';
+  [{p:.75,l:'< 80%'},{p:.85,l:'80–100%'},{p:1,l:'100%'},{p:1.4,l:'≥ 140%'}].forEach(sc=>{
+    const ss=plan>0?plan*sc.p:ts;
+    const z=calcZP(ss,tc,tu,sc.p);
+    const cl=sc.p>=1.4?'ts':sc.p>=1?'ti':sc.p>=.8?'tw':'td';
+    scen+=`<tr><td><span class="tag ${cl}">${sc.l}</span></td><td>${Math.round(sc.p*100)}%</td><td><b>${fmt(z.total)}</b></td></tr>`;
+  });
+
+  const avg=tc>0?ts/tc:0; const upt=tc>0?tu/tc:0;
+
+  setContent(`
+    <div class="motiv">${motiv(pct)}</div>
+    <div class="g4" style="margin-bottom:1rem">
+      <div class="metric"><div class="m-lbl">Продажи</div><div class="m-val" style="font-size:17px">${fmt(ts)}</div></div>
+      <div class="metric"><div class="m-lbl">Выполнение</div><div class="m-val" style="color:${barCol(pct)}">${Math.round(pct*100)}%</div></div>
+      <div class="metric"><div class="m-lbl">ЗП сейчас</div><div class="m-val" style="font-size:17px;color:var(--blue)">${fmt(zp.total)}</div></div>
+      <div class="metric"><div class="m-lbl">План месяца</div><div class="m-val" style="font-size:17px">${plan>0?fmt(plan):'—'}</div></div>
+    </div>
+    <div class="g2">
+      <div class="card" style="margin:0"><div class="card-title">Прогресс к целям</div>${stages}</div>
+      <div class="card" style="margin:0"><div class="card-title">Расшифровка ЗП</div>${zpHtml}</div>
+    </div>
+    <div class="g2" style="margin-top:1rem">
+      <div class="card" style="margin:0">
+        <div class="card-title">KPI</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div><div style="font-size:11px;color:var(--muted)">Средний чек</div>
+               <div style="font-size:20px;font-weight:700">${fmt(avg)}</div>
+               <div style="font-size:11px;color:var(--muted)">норма: ${fmt(PARAMS.avgNorm||15000)}</div></div>
+          <div>${avg>=(PARAMS.avgNorm||15000)?`<span class="tag ts">+${fmt(PARAMS.bKpi||10000)}</span>`:`<span class="tag tw">−${fmt((PARAMS.avgNorm||15000)-avg)}</span>`}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div><div style="font-size:11px;color:var(--muted)">UPT</div>
+               <div style="font-size:20px;font-weight:700">${upt.toFixed(2)}</div>
+               <div style="font-size:11px;color:var(--muted)">норма: ${parseFloat(PARAMS.uptNorm||2.5).toFixed(1)}</div></div>
+          <div>${upt>=parseFloat(PARAMS.uptNorm||2.5)?`<span class="tag ts">+${fmt(PARAMS.bKpi||10000)}</span>`:`<span class="tag tw">${upt.toFixed(2)} / ${parseFloat(PARAMS.uptNorm||2.5).toFixed(1)}</span>`}</div>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="card-title">Нужно продавать в день</div>${daily}
+        <div style="margin-top:12px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px">ЗП по сценариям</div>
+          <table><tr><th>Сцен.</th><th>%</th><th>ЗП</th></tr>${scen}</table>
+        </div>
+      </div>
+    </div>`);
+}
+
+window.pgEnter = function() {
+  nav('pgEnter'); setTitle('Ввод продаж'); setBadge('');
+  setContent(`
+    <div class="card" style="max-width:480px">
+      <div class="card-title">Добавить / изменить продажи</div>
+      <div id="entry-msg"></div>
+      <div class="fg"><label class="fl">Дата</label>
+        <input type="date" id="e-date" class="fc" value="${today()}">
+      </div>
+      <div class="fg"><label class="fl">Сумма продаж (₸)</label>
+        <input type="number" id="e-sales" class="fc" placeholder="0">
+      </div>
+      <div class="fr">
+        <div class="fg"><label class="fl">Чеков</label><input type="number" id="e-checks" class="fc" placeholder="0"></div>
+        <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="e-units" class="fc" placeholder="0"></div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" onclick="saveEntry()">Сохранить</button>
+        <button class="btn" onclick="loadForDate()">Редактировать запись за дату</button>
+      </div>
+    </div>`);
+}
+
+window.loadForDate = async function() {
+  const date = document.getElementById('e-date').value;
+  if(!date) return;
+  L(true);
+  const all = await api('getSales',{uid:CU.id});
+  L(false);
+  const e = all.find(s=>s.date===date);
+  if(e){
+    document.getElementById('e-sales').value  = e.sales  || 0;
+    document.getElementById('e-checks').value = e.checks || 0;
+    document.getElementById('e-units').value  = e.units  || 0;
   }
 }
 
-function jsonResponse(data) {
-  return ContentService
-    .createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+window.saveEntry = async function() {
+  const date   = document.getElementById('e-date').value;
+  const sales  = parseFloat(document.getElementById('e-sales').value)||0;
+  const checks = parseInt(document.getElementById('e-checks').value)||0;
+  const units  = parseInt(document.getElementById('e-units').value)||0;
+  if(!date){alert('Выберите дату');return}
+  L(true);
+  await apiPost('saveSale',{uid:CU.id,date,sales,checks,units});
+  window._sales = await api('getSales',{uid:CU.id});
+  L(false);
+  const m=document.getElementById('entry-msg');
+  m.className='alert a-s'; m.textContent=`✓ Сохранено за ${date}`;
+  document.getElementById('e-sales').value='';
+  document.getElementById('e-checks').value='';
+  document.getElementById('e-units').value='';
+  setTimeout(()=>m.textContent='',3000);
 }
 
-// ══════════════════════════════════════════════════════
-// HANDLERS
-// ══════════════════════════════════════════════════════
-
-function getUsers() {
-  return sheetToObjects('users');
+window.pgHistory = async function() {
+  nav('pgHistory'); setTitle('История продаж'); setBadge('');
+  setContent(`<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+      <div class="card-title" style="margin:0">История</div>
+      <select id="h-month" class="fc" style="width:auto" onchange="loadHistory()">${monthsOptions(6)}</select>
+    </div>
+    <div id="h-body"><div class="spin" style="margin:1rem auto;display:block"></div></div>
+  </div>`);
+  await loadHistory();
 }
 
-function addUser(body) {
-  const id = 'u' + Date.now();
-  upsertRow('users', 'id', id, {
-    id, name: body.name, shop: body.shop, role: body.role, pass: body.pass
-  });
-  return {ok: true, id};
-}
-
-function deleteUser(body) {
-  deleteRow('users', 'id', body.id);
-  return {ok: true};
-}
-
-function getParams() {
-  const rows = sheetToObjects('params');
-  const result = {};
-  rows.forEach(r => result[r.key] = parseFloat(r.value) || r.value);
-  return result;
-}
-
-function saveParams(body) {
-  const keys = ['rate','shifts','base','p80','p100','p140','bMag','bKpi','avgNorm','uptNorm'];
-  keys.forEach(k => {
-    if (body[k] !== undefined) {
-      upsertRow('params', 'key', k, {key: k, value: String(body[k])});
-    }
-  });
-  return {ok: true};
-}
-
-function getPlans(body) {
-  const rows = sheetToObjects('plans');
-  if (body.uid) return rows.filter(r => r.uid === body.uid);
-  if (body.mk)  return rows.filter(r => r.mk  === body.mk);
-  return rows;
-}
-
-function savePlan(body) {
-  const mk = String(body.mk).slice(0, 7); // ensure yyyy-mm format
-  const key = body.uid + '_' + mk;
-  upsertRow('plans', 'key', key, {
-    key, uid: body.uid, mk: mk, amount: body.amount
-  });
-  // Force text format on mk column to prevent Sheets auto-converting to date
-  const sh = getSheet('plans');
-  const data = sh.getDataRange().getValues();
-  const headers = data[0];
-  const mkIdx = headers.indexOf('mk');
-  if(mkIdx >= 0) {
-    const range = sh.getRange(1, mkIdx+1, sh.getLastRow(), 1);
-    range.setNumberFormat('@'); // @ = plain text
+window.loadHistory = async function() {
+  const mk = document.getElementById('h-month').value;
+  L(true);
+  const all = await api('getSales',{uid:CU.id});
+  window._sales = all;
+  L(false);
+  const entries = all.filter(s=>String(s.date).slice(0,10).startsWith(mk))
+    .map(e=>({...e, date:String(e.date).slice(0,10)}))
+    .sort((a,b)=>b.date.localeCompare(a.date));
+  const plan = getPlan(CU.id,mk);
+  let ts=0,tc=0,tu=0; entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+  const pct=plan>0?ts/plan:0;
+  let html='';
+  if(!entries.length){
+    html='<div style="color:var(--muted);font-size:13px;padding:1rem 0">Нет записей за этот период</div>';
+  } else {
+    html=`<div class="tw-wrap"><table>
+      <tr><th>Дата</th><th>Продажи</th><th>Чеков</th><th>Единиц</th><th>Ср.чек</th><th></th></tr>
+      ${entries.map(e=>`<tr>
+        <td>${e.date}</td><td>${fmt(+e.sales)}</td><td>${fmtN(+e.checks)}</td><td>${fmtN(+e.units)}</td>
+        <td>${+e.checks>0?fmt(+e.sales/+e.checks):'—'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-sm" onclick="editEntry('${e.date}')">✏️</button>
+          <button class="btn btn-sm btn-d" onclick="delEntry('${e.date}')">✕</button>
+        </td>
+      </tr>`).join('')}
+    </table></div>
+    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);display:flex;gap:2rem;font-size:13px;flex-wrap:wrap">
+      <span>Итого: <b>${fmt(ts)}</b></span>
+      <span>Чеков: <b>${fmtN(tc)}</b></span>
+      <span>Единиц: <b>${fmtN(tu)}</b></span>
+      <span>Выполнение: <b style="color:${barCol(pct)}">${Math.round(pct*100)}%</b></span>
+    </div>`;
   }
-  return {ok: true};
+  document.getElementById('h-body').innerHTML=html;
 }
 
-function getSales(body) {
-  const rows = sheetToObjects('sales');
-  let result = rows;
-  if (body.uid) result = result.filter(r => r.uid === body.uid);
-  if (body.mk)  result = result.filter(r => String(r.date).startsWith(body.mk));
-  return result;
+window.editEntry = function(date) {
+  pgEnter();
+  setTimeout(async ()=>{
+    document.getElementById('e-date').value=date;
+    await loadForDate();
+  },50);
 }
 
-function saveSale(body) {
-  const date = String(body.date).slice(0, 10); // ensure yyyy-mm-dd
-  const key = body.uid + '_' + date;
-  upsertRow('sales', 'key', key, {
-    key,
-    uid:    body.uid,
-    date:   date,
-    sales:  body.sales  || 0,
-    checks: body.checks || 0,
-    units:  body.units  || 0,
+window.delEntry = async function(date) {
+  if(!confirm(`Удалить запись за ${date}?`)) return;
+  L(true);
+  await apiPost('deleteSale',{uid:CU.id,date});
+  L(false);
+  await loadHistory();
+}
+
+window.pgRating = async function() {
+  nav('pgRating'); setTitle('Рейтинг магазина'); setBadge('');
+  setContent(`<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+      <div class="card-title" style="margin:0">Рейтинг — ${CU.shop}</div>
+      <select id="r-month" class="fc" style="width:auto" onchange="loadRating()">${monthsOptions(6)}</select>
+    </div>
+    <div id="r-body"><div class="spin" style="margin:1rem auto;display:block"></div></div>
+  </div>`);
+  await loadRating();
+}
+
+window.loadRating = async function() {
+  const mk=document.getElementById('r-month').value;
+  L(true);
+  const allSales=await api('getSales',{});
+  window._plans=await api('getPlans',{});
+  L(false);
+  const sellers=USERS.filter(u=>u.role==='seller'&&u.shop===CU.shop);
+  const rows=sellers.map(u=>{
+    const entries=allSales.filter(s=>s.uid===u.id&&String(s.date).slice(0,10).startsWith(mk));
+    let ts=0; entries.forEach(e=>ts+=+e.sales);
+    const plan=getPlan(u.id,mk);
+    const pct=plan>0?ts/plan:0;
+    return{name:u.name,ts,pct,isMe:u.id===CU.id};
+  }).sort((a,b)=>b.pct-a.pct);
+  let html=`<div class="tw-wrap"><table>
+    <tr><th>#</th><th>Продавец</th><th>Продажи</th><th>%</th><th>Ранг</th></tr>`;
+  rows.forEach((r,i)=>{
+    html+=`<tr ${r.isMe?'style="background:var(--blue-l)"':''}>
+      <td><b>${i+1}</b></td>
+      <td>${r.name}${r.isMe?' <span class="tag ti">Вы</span>':''}</td>
+      <td>${fmt(r.ts)}</td>
+      <td style="color:${barCol(r.pct)};font-weight:700">${Math.round(r.pct*100)}%</td>
+      <td>${rankChip(r.pct)}</td>
+    </tr>`;
   });
-  // Force text format on date column
-  const sh = getSheet('sales');
-  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  const dateIdx = headers.indexOf('date');
-  if(dateIdx >= 0) {
-    sh.getRange(1, dateIdx+1, sh.getLastRow(), 1).setNumberFormat('@');
-  }
-  return {ok: true};
+  html+='</table></div>';
+  document.getElementById('r-body').innerHTML=html;
 }
 
-function deleteSaleEntry(body) {
-  const key = body.uid + '_' + body.date;
-  deleteRow('sales', 'key', key);
-  return {ok: true};
+// ══════════════════════════════════════
+// ADMIN / MANAGER
+// ══════════════════════════════════════
+window.pgReport = async function() {
+  nav('pgReport'); setTitle('Сводка по продавцам'); setBadge('');
+  setContent(`<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+    <select id="rep-mk" class="fc" style="width:auto" onchange="loadReport()">${monthsOptions(6)}</select>
+  </div><div id="rep-body"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
+  await loadReport();
 }
+
+window.loadReport = async function() {
+  const mk=document.getElementById('rep-mk').value;
+  L(true);
+  const [allSales, allPlans] = await Promise.all([api('getSales',{}), api('getPlans',{})]);
+  window._sales=allSales; window._plans=allPlans;
+  PARAMS = await api('getParams');
+  L(false);
+  let sellers=USERS.filter(u=>u.role==='seller');
+  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  const byShop={};
+  sellers.forEach(u=>{
+    if(!byShop[u.shop])byShop[u.shop]=[];
+    const ent=allSales.filter(s=>s.uid===u.id&&String(s.date).slice(0,10).startsWith(mk));
+    let ts=0,tc=0,tu=0; ent.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+    const plan=getPlan(u.id,mk);
+    const pct=plan>0?ts/plan:0;
+    const zp=calcZP(ts,tc,tu,pct);
+    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp:zp.total});
+  });
+  let html='';
+  Object.entries(byShop).forEach(([shop,rows])=>{
+    rows.sort((a,b)=>b.pct-a.pct);
+    let shopTotal=0;
+    html+=`<div class="card"><div class="card-title">${shop}</div>
+      <div class="tw-wrap"><table>
+      <tr><th>Продавец</th><th>Продажи</th><th>План</th><th>%</th><th>Ср.чек</th><th>UPT</th><th>ЗП</th><th>Ранг</th></tr>`;
+    rows.forEach(r=>{
+      shopTotal+=r.ts;
+      const avg=r.tc>0?r.ts/r.tc:0; const upt=r.tc>0?r.tu/r.tc:0;
+      html+=`<tr>
+        <td>${r.name}</td><td>${fmt(r.ts)}</td><td>${r.plan?fmt(r.plan):'—'}</td>
+        <td style="color:${barCol(r.pct)};font-weight:700">${Math.round(r.pct*100)}%</td>
+        <td>${avg>0?fmt(avg):'—'}</td><td>${upt>0?upt.toFixed(2):'—'}</td>
+        <td style="font-weight:700;color:var(--blue)">${fmt(r.zp)}</td>
+        <td>${rankChip(r.pct)}</td>
+      </tr>`;
+    });
+    html+=`</table></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:8px">Итого продаж: <b style="color:var(--text)">${fmt(shopTotal)}</b></div>
+    </div>`;
+  });
+  document.getElementById('rep-body').innerHTML=html||'<div class="muted">Нет данных</div>';
+}
+
+window.pgPayroll = async function() {
+  nav('pgPayroll'); setTitle('Начисление зарплат'); setBadge('');
+  setContent(`
+    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+      <select id="pay-mk" class="fc" style="width:auto" onchange="loadPayroll()">${monthsOptions(6)}</select>
+      <span style="font-size:13px;color:var(--muted)">Нажми ✏️ для корректировки данных продавца</span>
+    </div>
+    <div id="pay-body"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
+  await loadPayroll();
+}
+
+window.loadPayroll = async function() {
+  const mk=document.getElementById('pay-mk').value;
+  L(true);
+  const [allSales,allPlans] = await Promise.all([api('getSales',{}),api('getPlans',{})]);
+  window._sales=allSales; window._plans=allPlans;
+  PARAMS=await api('getParams');
+  L(false);
+  let sellers=USERS.filter(u=>u.role==='seller');
+  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  const byShop={};
+  sellers.forEach(u=>{
+    if(!byShop[u.shop])byShop[u.shop]=[];
+    const ent=allSales.filter(s=>s.uid===u.id&&String(s.date).slice(0,10).startsWith(mk));
+    let ts=0,tc=0,tu=0; ent.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+    const plan=getPlan(u.id,mk);
+    const pct=plan>0?ts/plan:0;
+    const zp=calcZP(ts,tc,tu,pct);
+    const comm=zp.base+zp.a80+zp.a100+zp.a140;
+    const bon=zp.bMag+zp.bk1+zp.bk2;
+    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp,comm,bon,ent});
+  });
+  let html=''; let grand=0;
+  Object.entries(byShop).forEach(([shop,rows])=>{
+    let shopZP=0;
+    html+=`<div class="card"><div class="card-title">${shop}</div>
+      <div class="tw-wrap"><table>
+      <tr><th>Продавец</th><th>Продажи</th><th>% вып.</th><th>Оклад</th><th>Комиссия</th><th>Бонусы</th><th>ИТОГО ЗП</th><th></th></tr>`;
+    rows.forEach(r=>{
+      shopZP+=r.zp.total; grand+=r.zp.total;
+      html+=`<tr>
+        <td><b>${r.name}</b></td><td>${fmt(r.ts)}</td>
+        <td style="color:${barCol(r.pct)};font-weight:700">${Math.round(r.pct*100)}%</td>
+        <td>${fmt(r.zp.oklad)}</td><td>${fmt(r.comm)}</td><td>${fmt(r.bon)}</td>
+        <td style="font-weight:700;font-size:15px;color:var(--blue)">${fmt(r.zp.total)}</td>
+        <td><button class="btn btn-sm" onclick='openEditModal(${JSON.stringify({uid:r.id,name:r.name,mk,ent:r.ent})})'>✏️</button></td>
+      </tr>`;
+    });
+    html+=`</table></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:8px">ФОТ магазина: <b style="color:var(--blue)">${fmt(shopZP)}</b></div>
+    </div>`;
+  });
+  html+=`<div style="background:var(--blue-d);color:#fff;border-radius:var(--r);padding:1rem 1.25rem;font-size:16px;font-weight:700">
+    Итого ФОТ по сети: ${fmt(grand)}</div>`;
+  document.getElementById('pay-body').innerHTML=html;
+}
+
+window.openEditModal = function({uid,name,mk,ent}) {
+  const sorted=[...ent].sort((a,b)=>a.date.localeCompare(b.date));
+  const rows=sorted.map(e=>`<tr>
+    <td>${e.date}</td>
+    <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px" value="${+e.sales}" data-date="${e.date}" data-f="sales"></td>
+    <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px;width:70px" value="${+e.checks}" data-date="${e.date}" data-f="checks"></td>
+    <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px;width:70px" value="${+e.units}" data-date="${e.date}" data-f="units"></td>
+    <td><button class="btn btn-sm btn-d" onclick="adminDelRow('${uid}','${e.date}',this)">✕</button></td>
+  </tr>`).join('');
+  const ov=document.createElement('div');
+  ov.className='ov';
+  ov.innerHTML=`<div class="ov-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+      <b>Редактирование: ${name}</b>
+      <button class="btn btn-sm" onclick="this.closest('.ov').remove()">✕ Закрыть</button>
+    </div>
+    <div class="tw-wrap"><table>
+      <tr><th>Дата</th><th>Продажи</th><th>Чеков</th><th>Единиц</th><th></th></tr>
+      ${rows}
+    </table></div>
+    <div style="margin-top:1rem;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-p" onclick="adminSaveAll('${uid}','${mk}',this)">Сохранить изменения</button>
+      <span id="edit-msg" style="font-size:13px"></span>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+window.adminDelRow = async function(uid,date,btn) {
+  if(!confirm(`Удалить ${date}?`)) return;
+  L(true);
+  await apiPost('deleteSale',{uid,date});
+  L(false);
+  btn.closest('tr').remove();
+  await loadPayroll();
+}
+
+window.adminSaveAll = async function(uid,mk,btn) {
+  const inputs=btn.closest('.ov-card').querySelectorAll('input[data-date]');
+  const byDate={};
+  inputs.forEach(inp=>{
+    const d=inp.dataset.date;
+    if(!byDate[d]) byDate[d]={uid,date:d,sales:0,checks:0,units:0};
+    byDate[d][inp.dataset.f]=parseFloat(inp.value)||0;
+  });
+  L(true);
+  for(const data of Object.values(byDate)) await apiPost('saveSale',data);
+  L(false);
+  const msg=btn.closest('.ov-card').querySelector('#edit-msg');
+  msg.textContent='✓ Сохранено'; msg.style.color='var(--green)';
+  setTimeout(()=>loadPayroll(),400);
+}
+
+window.pgSellers = async function() {
+  nav('pgSellers'); setTitle('Сотрудники'); setBadge('');
+  setContent(`<div class="g2">
+    <div class="card" style="margin:0">
+      <div class="card-title">Добавить сотрудника</div>
+      <div class="fg"><label class="fl">ФИО</label><input type="text" id="new-name" class="fc" placeholder="Иванова А.А."></div>
+      <div class="fr">
+        <div class="fg"><label class="fl">Магазин</label>
+          <select id="new-shop" class="fc">${SHOPS.map(s=>`<option>${s}</option>`).join('')}</select>
+        </div>
+        <div class="fg"><label class="fl">Роль</label>
+          <select id="new-role" class="fc">
+            <option value="seller">Продавец</option>
+            <option value="manager">Управляющий</option>
+            ${CU.role==='admin'?'<option value="admin">Гл. Администратор</option>':''}
+          </select>
+        </div>
+      </div>
+      <div class="fg"><label class="fl">Пароль</label><input type="text" id="new-pass" class="fc" placeholder="пароль"></div>
+      <button class="btn btn-p" onclick="addSeller()">Добавить</button>
+      <div id="add-msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
+    <div class="card" style="margin:0">
+      <div class="card-title">Список сотрудников</div>
+      <div id="sellers-list"><div class="spin" style="margin:1rem auto;display:block"></div></div>
+    </div>
+  </div>`);
+  renderSellersList();
+}
+
+function renderSellersList() {
+  let users=CU.role==='admin'?USERS:USERS.filter(u=>u.shop===CU.shop);
+  users=[...users].sort((a,b)=>a.name.localeCompare(b.name));
+  const rmap={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец'};
+  document.getElementById('sellers-list').innerHTML=`
+    <div class="tw-wrap"><table>
+      <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th></th></tr>
+      ${users.map(u=>`<tr><td>${u.name}</td><td>${u.shop||'—'}</td><td>${rmap[u.role]||u.role}</td>
+        <td><button class="btn btn-sm btn-d" onclick="removeSeller('${u.id}')">Удалить</button></td></tr>`).join('')}
+    </table></div>`;
+}
+
+window.addSeller = async function() {
+  const name=document.getElementById('new-name').value.trim();
+  const shop=document.getElementById('new-shop').value;
+  const role=document.getElementById('new-role').value;
+  const pass=document.getElementById('new-pass').value.trim();
+  if(!name||!pass){alert('Заполните имя и пароль');return}
+  L(true);
+  const r=await apiPost('addUser',{name,shop,role,pass});
+  USERS=await api('getUsers');
+  populateLoginSelect();
+  L(false);
+  document.getElementById('new-name').value='';
+  document.getElementById('new-pass').value='';
+  const m=document.getElementById('add-msg');
+  m.className='alert a-s'; m.textContent='✓ Сотрудник добавлен';
+  renderSellersList();
+  setTimeout(()=>m.textContent='',2000);
+}
+
+window.removeSeller = async function(id) {
+  if(!confirm('Удалить сотрудника?')) return;
+  L(true);
+  await apiPost('deleteUser',{id});
+  USERS=await api('getUsers');
+  populateLoginSelect();
+  L(false);
+  renderSellersList();
+}
+
+window.pgPlans = async function() {
+  nav('pgPlans'); setTitle('Планы продаж'); setBadge('');
+  L(true);
+  window._plans=await api('getPlans',{});
+  L(false);
+  let sellers=USERS.filter(u=>u.role==='seller');
+  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  setContent(`
+    <div class="card">
+      <div class="card-title">Установить план</div>
+      <div class="fr">
+        <div class="fg"><label class="fl">Продавец</label>
+          <select id="p-seller" class="fc">
+            ${sellers.map(u=>`<option value="${u.id}">${u.name} (${u.shop})</option>`).join('')}
+          </select>
+        </div>
+        <div class="fg"><label class="fl">Месяц</label>
+          <select id="p-month" class="fc">${monthsOptions(3,4)}</select>
+        </div>
+      </div>
+      <div class="fg"><label class="fl">Сумма плана (₸)</label>
+        <input type="number" id="p-amount" class="fc" placeholder="2000000">
+      </div>
+      <button class="btn btn-p" onclick="savePlan()">Сохранить план</button>
+      <div id="plan-msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Таблица планов</div>
+      <div id="plans-tbl" class="tw-wrap">${buildPlansTable(sellers)}</div>
+    </div>`);
+}
+
+function buildPlansTable(sellers) {
+  const now=new Date();
+  const months=[];
+  for(let i=-1;i<5;i++){
+    const d=new Date(now.getFullYear(),now.getMonth()+i,1);
+    months.push(d.toISOString().slice(0,7));
+  }
+  let html=`<table><tr><th>Продавец</th>${months.map(m=>`<th>${m}</th>`).join('')}</tr>`;
+  sellers.forEach(u=>{
+    html+=`<tr><td>${u.name}</td>`;
+    months.forEach(mk=>{
+      const p=getPlan(u.id,mk);
+      html+=`<td style="font-size:12px">${p?fmtN(p):'—'}</td>`;
+    });
+    html+='</tr>';
+  });
+  return html+'</table>';
+}
+
+window.savePlan = async function() {
+  const uid=document.getElementById('p-seller').value;
+  const mk =document.getElementById('p-month').value;
+  const amt=parseFloat(document.getElementById('p-amount').value)||0;
+  L(true);
+  await apiPost('savePlan',{uid,mk,amount:amt});
+  window._plans=await api('getPlans',{});
+  L(false);
+  const m=document.getElementById('plan-msg');
+  m.className='alert a-s'; m.textContent='✓ План сохранён';
+  let sellers=USERS.filter(u=>u.role==='seller');
+  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  document.getElementById('plans-tbl').innerHTML=buildPlansTable(sellers);
+  setTimeout(()=>m.textContent='',2000);
+}
+
+window.pgParams = function() {
+  nav('pgParams'); setTitle('Параметры расчёта ЗП'); setBadge('');
+  const p=PARAMS;
+  setContent(`<div class="card" style="max-width:560px">
+    <div class="card-title">Параметры сетки</div>
+    <div id="params-msg"></div>
+    <div class="fr">
+      <div class="fg"><label class="fl">Оплата за смену (₸)</label><input type="number" id="pp-rate" class="fc" value="${p.rate||6000}"></div>
+      <div class="fg"><label class="fl">Смен в месяце</label><input type="number" id="pp-shifts" class="fc" value="${p.shifts||15}"></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label class="fl">% от продаж (базовый)</label><input type="number" id="pp-base" class="fc" step="0.001" value="${p.base||0.01}"></div>
+      <div class="fg"><label class="fl">Доб. % при 80%</label><input type="number" id="pp-80" class="fc" step="0.001" value="${p.p80||0.005}"></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label class="fl">Доб. % при 100%</label><input type="number" id="pp-100" class="fc" step="0.001" value="${p.p100||0.015}"></div>
+      <div class="fg"><label class="fl">Доб. % при 140%</label><input type="number" id="pp-140" class="fc" step="0.001" value="${p.p140||0.03}"></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label class="fl">Бонус план магазина (₸)</label><input type="number" id="pp-bmag" class="fc" value="${p.bMag||10000}"></div>
+      <div class="fg"><label class="fl">Бонус KPI — за каждый (₸)</label><input type="number" id="pp-bkpi" class="fc" value="${p.bKpi||10000}"></div>
+    </div>
+    <div class="fr">
+      <div class="fg"><label class="fl">Норма среднего чека (₸)</label><input type="number" id="pp-avg" class="fc" value="${p.avgNorm||15000}"></div>
+      <div class="fg"><label class="fl">Норма UPT</label><input type="number" id="pp-upt" class="fc" step="0.1" value="${p.uptNorm||2.5}"></div>
+    </div>
+    <button class="btn btn-p" onclick="saveParams()">Сохранить параметры</button>
+  </div>`);
+}
+
+window.saveParams = async function() {
+  const np={
+    rate:   parseFloat(document.getElementById('pp-rate').value)||6000,
+    shifts: parseInt(document.getElementById('pp-shifts').value)||15,
+    base:   parseFloat(document.getElementById('pp-base').value)||0.01,
+    p80:    parseFloat(document.getElementById('pp-80').value)||0.005,
+    p100:   parseFloat(document.getElementById('pp-100').value)||0.015,
+    p140:   parseFloat(document.getElementById('pp-140').value)||0.03,
+    bMag:   parseFloat(document.getElementById('pp-bmag').value)||10000,
+    bKpi:   parseFloat(document.getElementById('pp-bkpi').value)||10000,
+    avgNorm:parseFloat(document.getElementById('pp-avg').value)||15000,
+    uptNorm:parseFloat(document.getElementById('pp-upt').value)||2.5,
+  };
+  L(true);
+  await apiPost('saveParams',np);
+  PARAMS=np;
+  L(false);
+  const m=document.getElementById('params-msg');
+  m.className='alert a-s'; m.textContent='✓ Параметры сохранены — вступают в силу немедленно';
+  setTimeout(()=>m.textContent='',3000);
+}
+
+init();
+</script>
+</body>
+</html>
