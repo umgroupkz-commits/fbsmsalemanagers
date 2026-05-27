@@ -396,8 +396,8 @@ window.pgDash=async function(){
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div><div style="font-size:11px;color:var(--muted)">UPT</div>
             <div style="font-size:20px;font-weight:700">${upt.toFixed(2)}</div>
-            <div style="font-size:11px;color:var(--muted)">норма: ${(parseFloat(PARAMS.uptNorm)||2.5).toFixed(1)}</div></div>
-          <div>${upt>=(parseFloat(PARAMS.uptNorm)||2.5)?`<span class="tag ts">+${fmt(parseFloat(PARAMS.bKpi)||10000)}</span>`:`<span class="tag tw">${upt.toFixed(2)} / ${(parseFloat(PARAMS.uptNorm)||2.5).toFixed(1)}</span>`}</div>
+            <div style="font-size:11px;color:var(--muted)">норма: ${Math.min(parseFloat(PARAMS.uptNorm)||2.5,100).toFixed(1)}</div></div>
+          <div>${upt>=Math.min(parseFloat(PARAMS.uptNorm)||2.5,100)?`<span class="tag ts">+${fmt(parseFloat(PARAMS.bKpi)||10000)}</span>`:`<span class="tag tw">${upt.toFixed(2)} / ${Math.min(parseFloat(PARAMS.uptNorm)||2.5,100).toFixed(1)}</span>`}</div>
         </div>
       </div>
       <div class="card" style="margin:0">
@@ -834,13 +834,17 @@ function renderSellers(){
   const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец'};
   document.getElementById('slist').innerHTML=`<div class="tw-wrap"><table>
     <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th></th></tr>
-    ${users.map(u=>`<tr>
-      <td>${u.name}</td><td>${u.shop||'—'}</td><td>${rm[u.role]||u.role}</td>
-      <td style="white-space:nowrap">
-        <button class="btn bsm" onclick="openEditUser('${u.id}')">✏️</button>
-        <button class="btn bsm bd2" onclick="removeSeller('${u.id}')">Удалить</button>
-      </td>
-    </tr>`).join('')}
+    ${users.map(u=>{
+      // manager can only edit/delete sellers from their shop
+      const canEdit = CU.role==='admin' || (CU.role==='manager' && u.role==='seller' && u.shop===CU.shop);
+      return `<tr>
+        <td>${u.name}</td><td>${u.shop||'—'}</td><td>${rm[u.role]||u.role}</td>
+        <td style="white-space:nowrap">
+          ${canEdit?`<button class="btn bsm" onclick="openEditUser('${u.id}')">✏️</button>
+          <button class="btn bsm bd2" onclick="removeSeller('${u.id}')">Удалить</button>`:''}
+        </td>
+      </tr>`;
+    }).join('')}
   </table></div>`;
 }
 
