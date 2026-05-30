@@ -387,7 +387,7 @@ window.pgDash=async function(){
       <div class="metric"><div class="ml">ЗП сейчас</div><div class="mv" style="font-size:17px;color:var(--blue)">${fmt(zp.total)}</div></div>
       <div class="metric"><div class="ml">План месяца</div><div class="mv" style="font-size:17px">${plan>0?fmt(plan):'—'}</div></div>
     </div>
-    ${shopStats.plan>0?`
+    ${(shopStats&&shopStats.plan>0)?`
     <div class="card" style="margin-bottom:1rem;border-left:3px solid #185FA5">
       <div style="font-size:13px;font-weight:600;color:var(--bd);margin-bottom:8px">📊 План магазина ${CU.shop}</div>
       <div style="display:flex;gap:2rem;flex-wrap:wrap;font-size:13px">
@@ -637,13 +637,11 @@ window.loadReport=async function(){
     html+=`<div class="card" style="margin-bottom:1rem">
       <div class="ct">План / Факт по магазинам</div>
       <div class="tw-wrap"><table>
-        <tr><th>Магазин</th><th>Факт продаж</th><th>План магазина</th><th>%</th><th>Бонус</th></tr>
+        <tr><th>Магазин</th><th>Факт продаж</th><th>План магазина</th></tr>
         ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
           <td><b>${shop}</b></td>
           <td>${fmt(ss.fact)}</td>
           <td>${ss.plan?fmt(ss.plan):'—'}</td>
-          <td style="color:${barCol(ss.pct)};font-weight:700">${ss.plan?Math.round(ss.pct*100)+'%':'—'}</td>
-          <td>${ss.plan>0?(ss.fact>=ss.plan?'<span class="tag ts">✓ Начислен</span>':'<span class="tag tw">✗ Не начислен</span>'):'—'}</td>
         </tr>`).join('')}
       </table></div>
     </div>`;
@@ -964,7 +962,9 @@ window.removeSeller=async function(id){
 // ══ ПЛАНЫ ══
 window.pgPlans=async function(){
   nav('pgPlans');setTitle('Планы продаж');setBadge('');
-  L(true);_plans=await api('getPlans',{});L(false);
+  L(true);
+  _plans=await api('getPlans',{});
+  L(false);
   const sellers=USERS.filter(u=>u.role==='seller');
   setContent(`<div class="card">
     <div class="ct">Установить план — Продавец</div>
@@ -997,6 +997,9 @@ window.pgPlans=async function(){
   <div class="card"><div class="ct">Таблица планов продавцов</div>
     <div class="tw-wrap" id="ptbl">${buildPlansTable(sellers)}</div>
   </div>`);
+  <div class="card"><div class="ct">Таблица планов магазинов</div>
+    <div class="tw-wrap" id="shop-ptbl">${buildShopPlansTable()}</div>
+  </div>
 }
 
 function buildShopPlansTable(){
