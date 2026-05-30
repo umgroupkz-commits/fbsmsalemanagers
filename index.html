@@ -630,7 +630,24 @@ window.loadReport=async function(){
     const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopMet);
     byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp:zp.total,actualShifts,shopMet,shopPlan:ss.plan,shopFact:ss.fact,shopPct:ss.pct});
   });
+  // Shop plan summary block
   let html='';
+  const shopSummaryRows=Object.keys((window._shopStats)||{});
+  if(shopSummaryRows.length>0){
+    html+=`<div class="card" style="margin-bottom:1rem">
+      <div class="ct">План / Факт по магазинам</div>
+      <div class="tw-wrap"><table>
+        <tr><th>Магазин</th><th>Факт продаж</th><th>План магазина</th><th>%</th><th>Бонус</th></tr>
+        ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
+          <td><b>${shop}</b></td>
+          <td>${fmt(ss.fact)}</td>
+          <td>${ss.plan?fmt(ss.plan):'—'}</td>
+          <td style="color:${barCol(ss.pct)};font-weight:700">${ss.plan?Math.round(ss.pct*100)+'%':'—'}</td>
+          <td>${ss.plan>0?(ss.fact>=ss.plan?'<span class="tag ts">✓ Начислен</span>':'<span class="tag tw">✗ Не начислен</span>'):'—'}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  }
   Object.entries(byShop).forEach(([shop,rows])=>{
     rows.sort((a,b)=>b.pct-a.pct);
     let shopTotal=0;
@@ -982,6 +999,20 @@ window.pgPlans=async function(){
   </div>`);
 }
 
+function buildShopPlansTable(){
+  const n=new Date(),y=n.getFullYear(),m=n.getMonth();
+  const months=[];
+  for(let i=-1;i<5;i++){const d=new Date(y,m+i,1);months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));}
+  let html=`<table><tr><th>Магазин</th>${months.map(mk=>`<th>${mk}</th>`).join('')}</tr>`;
+  SHOPS.forEach(shop=>{
+    const uid='shop_'+shop;
+    html+=`<tr><td>${shop}</td>`;
+    months.forEach(mk=>{const p=getPlan(uid,mk);html+=`<td style="font-size:12px">${p?fmtN(p):'—'}</td>`;});
+    html+='</tr>';
+  });
+  return html+'</table>';
+}
+
 function buildPlansTable(sellers){
   const n=new Date(),y=n.getFullYear(),m=n.getMonth();
   const months=[];
@@ -1012,6 +1043,7 @@ window.saveShopPlan=async function(){
   const uid='shop_'+shop; // special uid for shop plans
   L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
   const m=document.getElementById('shop-pmsg');m.className='alert as';m.textContent='✓ План магазина сохранён';
+  const tbl=document.getElementById('shop-ptbl');if(tbl)tbl.innerHTML=buildShopPlansTable();
   setTimeout(()=>m.textContent='',2000);
 }
 
