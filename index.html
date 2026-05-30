@@ -200,8 +200,8 @@ function calcZP(sales,checks,units,pct,p){
   return{oklad,base,a80,a100,a140,bMag,bk1,bk2,total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
 }
 
-function calcZPActual(sales,checks,units,pct,actualShifts,p){
-  // Используем фактические смены для оклада
+function calcZPActual(sales,checks,units,pct,actualShifts,shopPlanMet,p){
+  if(typeof shopPlanMet==='object'&&shopPlanMet!==null&&!p){p=shopPlanMet;shopPlanMet=undefined;}
   p=p||PARAMS;
   const rate=parseFloat(p.rate)||6000;
   const oklad=actualShifts*rate;
@@ -209,11 +209,12 @@ function calcZPActual(sales,checks,units,pct,actualShifts,p){
   const a80=pct>=0.8?sales*(parseFloat(p.p80)||0.005):0;
   const a100=pct>=1?sales*(parseFloat(p.p100)||0.015):0;
   const a140=pct>=1.4?sales*(parseFloat(p.p140)||0.03):0;
-  const bMag=pct>=1?(parseFloat(p.bMag)||10000):0;
+  const bMag=(shopPlanMet!==undefined?shopPlanMet:(pct>=1))?(parseFloat(p.bMag)||10000):0;
   const avg=checks>0?sales/checks:0;
   const upt=checks>0?units/checks:0;
+  const uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
   const bk1=avg>=(parseFloat(p.avgNorm)||15000)?(parseFloat(p.bKpi)||10000):0;
-  const bk2=upt>=(parseFloat(p.uptNorm)||2.5)?(parseFloat(p.bKpi)||10000):0;
+  const bk2=upt>=uptN?(parseFloat(p.bKpi)||10000):0;
   return{oklad,base,a80,a100,a140,bMag,bk1,bk2,total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
 }
 
@@ -314,15 +315,21 @@ window.pgDash=async function(){
   nav('pgDash');setTitle('Мой дашборд');
   setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
   L(true);
-  [_sales,_plans,PARAMS]=await Promise.all([api('getSales',{uid:CU.id}),api('getPlans',{}),api('getParams')]);
-  L(false);
   const mk=curMk();
+  [_sales,_plans,PARAMS,window._shopStats]=await Promise.all([
+    api('getSales',{uid:CU.id}),api('getPlans',{}),api('getParams'),
+    api('getShopStats',{mk})
+  ]);
+  L(false);
   const plan=getPlan(CU.id,mk);
   const entries=getEntriesFor(CU.id,mk);
   let ts=0,tc=0,tu=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
   const actualShifts=entries.length; // дней с продажами = фактические смены
   const pct=plan>0?ts/plan:0;
-  const zp=calcZPActual(ts,tc,tu,pct,actualShifts);
+  // Shop plan bonus
+  const shopStats=(window._shopStats||{})[CU.shop]||{fact:0,plan:0,pct:0};
+  const shopPlanMet=shopStats.plan>0 && shopStats.fact>=shopStats.plan;
+  const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopPlanMet);
   const normShifts=parseFloat(PARAMS.shifts)||15;
   setBadge(rankChip(pct));
 
@@ -333,7 +340,7 @@ window.pgDash=async function(){
     const need=Math.max(0,plan*st.p-ts);
     const bar=Math.min(100,plan>0?ts/(plan*st.p)*100:0);
     const scenSales=plan>0?plan*st.p:ts;
-    const scenZP=calcZPActual(scenSales,tc,tu,st.p,actualShifts);
+    const scenZP=calcZP(scenSales,tc,tu,st.p); // norm shifts for prognosis
     stages+=`<div style="margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
         <span style="color:${st.col};font-weight:600">${st.lbl}</span>
@@ -380,6 +387,17 @@ window.pgDash=async function(){
       <div class="metric"><div class="ml">ЗП сейчас</div><div class="mv" style="font-size:17px;color:var(--blue)">${fmt(zp.total)}</div></div>
       <div class="metric"><div class="ml">План месяца</div><div class="mv" style="font-size:17px">${plan>0?fmt(plan):'—'}</div></div>
     </div>
+    ${shopStats.plan>0?`
+    <div class="card" style="margin-bottom:1rem;border-left:3px solid #185FA5">
+      <div style="font-size:13px;font-weight:600;color:var(--bd);margin-bottom:8px">📊 План магазина ${CU.shop}</div>
+      <div style="display:flex;gap:2rem;flex-wrap:wrap;font-size:13px">
+        <span>План: <b>${fmt(shopStats.plan)}</b></span>
+        <span>Факт: <b>${fmt(shopStats.fact)}</b></span>
+        <span>Выполнение: <b style="color:${barCol(shopStats.pct)}">${Math.round(shopStats.pct*100)}%</b></span>
+        <span>${shopPlanMet?'<span class="tag ts">Бонус +'+fmt(parseFloat(PARAMS.bMag)||10000)+'</span>':'<span class="tag tw">Бонус не начислен</span>'}</span>
+      </div>
+      <div class="pb" style="margin-top:8px"><div class="pf" style="width:${Math.min(100,shopStats.pct*100)}%;background:#185FA5"></div></div>
+    </div>`:''}
     <div class="g2">
       <div class="card" style="margin:0"><div class="ct">Прогресс к целям</div>${stages}</div>
       <div class="card" style="margin:0"><div class="ct">Расшифровка ЗП</div>${zpHtml}</div>
@@ -423,7 +441,7 @@ window.calcScen=function(){
   const p=pctVal/100;
   const d=window._dashData||{};
   const scenSales=d.plan>0?d.plan*p:d.ts;
-  const z=calcZPActual(scenSales,d.tc||0,d.tu||0,p,d.actualShifts||0);
+  const z=calcZP(scenSales,d.tc||0,d.tu||0,p); // norm shifts for scenario
   document.getElementById('scen-result').textContent=`ЗП при ${Math.round(pctVal)}%: ${fmt(z.total)}`;
 }
 
@@ -595,7 +613,7 @@ window.pgReport=async function(){
 window.loadReport=async function(){
   const mk=document.getElementById('repMk').value;
   L(true);
-  [_sales,_plans,PARAMS]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams')]);
+  [_sales,_plans,PARAMS,window._shopStats]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams'),api('getShopStats',{mk})]);
   L(false);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
@@ -607,8 +625,10 @@ window.loadReport=async function(){
     const actualShifts=ents.length;
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
-    const zp=calcZPActual(ts,tc,tu,pct,actualShifts);
-    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp:zp.total,actualShifts});
+    const ss=(window._shopStats||{})[u.shop]||{pct:0,plan:0};
+    const shopMet=ss.plan>0&&ss.fact>=ss.plan;
+    const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopMet);
+    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp:zp.total,actualShifts,shopMet,shopPlan:ss.plan,shopFact:ss.fact,shopPct:ss.pct});
   });
   let html='';
   Object.entries(byShop).forEach(([shop,rows])=>{
@@ -649,7 +669,7 @@ window.pgPayroll=async function(){
 window.loadPayroll=async function(){
   const mk=document.getElementById('payMk').value;
   L(true);
-  [_sales,_plans,PARAMS]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams')]);
+  [_sales,_plans,PARAMS,window._shopStats]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams'),api('getShopStats',{mk})]);
   L(false);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
@@ -661,8 +681,10 @@ window.loadPayroll=async function(){
     const actualShifts=ents.length;
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
-    const zp=calcZPActual(ts,tc,tu,pct,actualShifts);
-    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp,actualShifts,ents});
+    const ss=(window._shopStats||{})[u.shop]||{plan:0,fact:0,pct:0};
+    const shopMet=ss.plan>0&&ss.fact>=ss.plan;
+    const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopMet);
+    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp,actualShifts,ents,shopMet});
   });
   let html='';let grand=0;
   Object.entries(byShop).forEach(([shop,rows])=>{
@@ -685,7 +707,7 @@ window.loadPayroll=async function(){
         <td style="font-weight:700;font-size:15px;color:var(--blue)">${fmt(z.total)}</td>
         <td style="white-space:nowrap">
           <button class="btn bsm" onclick='openEdit(${JSON.stringify({uid:r.id,name:r.name,mk,ents:r.ents})})'>✏️</button>
-          <button class="btn bsm" onclick='openSlip(${JSON.stringify({name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,pct:r.pct,actualShifts:r.actualShifts})})'>🖨️</button>
+          <button class="btn bsm" onclick='openSlip(${JSON.stringify({name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,pct:r.pct,actualShifts:r.actualShifts,shopMet:r.shopMet})})'>🖨️</button>
         </td>
       </tr>`;
     });
@@ -699,8 +721,8 @@ window.loadPayroll=async function(){
 }
 
 // Квиток для печати
-window.openSlip=function({name,shop,mk,ts,tc,tu,plan,pct,actualShifts}){
-  const zp=calcZPActual(ts,tc,tu,pct,actualShifts);
+window.openSlip=function({name,shop,mk,ts,tc,tu,plan,pct,actualShifts,shopMet}){
+  const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopMet);
   const avg=tc>0?ts/tc:0;const upt=tc>0?tu/tc:0;
   const mkLbl=new Date(mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
   const ov=document.createElement('div');ov.className='ov';
@@ -928,7 +950,7 @@ window.pgPlans=async function(){
   L(true);_plans=await api('getPlans',{});L(false);
   const sellers=USERS.filter(u=>u.role==='seller');
   setContent(`<div class="card">
-    <div class="ct">Установить план</div>
+    <div class="ct">Установить план — Продавец</div>
     <div class="fr">
       <div class="fg"><label class="fl">Продавец</label>
         <select id="psel" class="fc">${sellers.map(u=>`<option value="${u.id}">${u.name} (${u.shop})</option>`).join('')}</select>
@@ -941,7 +963,21 @@ window.pgPlans=async function(){
     <button class="btn bp" onclick="savePlan()">Сохранить план</button>
     <div id="pmsg" style="margin-top:8px;font-size:13px"></div>
   </div>
-  <div class="card"><div class="ct">Таблица планов</div>
+  <div class="card">
+    <div class="ct">Установить план — Магазин</div>
+    <div class="fr">
+      <div class="fg"><label class="fl">Магазин</label>
+        <select id="shop-psel" class="fc">${SHOPS.map(s=>`<option>${s}</option>`).join('')}</select>
+      </div>
+      <div class="fg"><label class="fl">Месяц</label>
+        <select id="shop-pmk" class="fc">${monthsOpts(3,4)}</select>
+      </div>
+    </div>
+    <div class="fg"><label class="fl">Сумма плана магазина (₸)</label><input type="number" id="shop-pamt" class="fc" placeholder="10000000"></div>
+    <button class="btn bp" onclick="saveShopPlan()">Сохранить план магазина</button>
+    <div id="shop-pmsg" style="margin-top:8px;font-size:13px"></div>
+  </div>
+  <div class="card"><div class="ct">Таблица планов продавцов</div>
     <div class="tw-wrap" id="ptbl">${buildPlansTable(sellers)}</div>
   </div>`);
 }
@@ -966,6 +1002,16 @@ window.savePlan=async function(){
   L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
   const m=document.getElementById('pmsg');m.className='alert as';m.textContent='✓ План сохранён';
   document.getElementById('ptbl').innerHTML=buildPlansTable(USERS.filter(u=>u.role==='seller'));
+  setTimeout(()=>m.textContent='',2000);
+}
+
+window.saveShopPlan=async function(){
+  const shop=document.getElementById('shop-psel').value;
+  const mk=document.getElementById('shop-pmk').value;
+  const amt=parseFloat(document.getElementById('shop-pamt').value)||0;
+  const uid='shop_'+shop; // special uid for shop plans
+  L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
+  const m=document.getElementById('shop-pmsg');m.className='alert as';m.textContent='✓ План магазина сохранён';
   setTimeout(()=>m.textContent='',2000);
 }
 
