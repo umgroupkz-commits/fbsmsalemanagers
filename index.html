@@ -640,13 +640,14 @@ window.loadReport=async function(){
   });
   // Shop plan summary block
   let html='';
-  const shopSummaryRows=Object.keys((window._shopStats)||{});
+  const shopStatsFiltered = CU.role==='manager' ? Object.fromEntries(Object.entries(window._shopStats||{}).filter(([s])=>s===CU.shop)) : (window._shopStats||{});
+  const shopSummaryRows=Object.keys(shopStatsFiltered);
   if(shopSummaryRows.length>0){
     html+=`<div class="card" style="margin-bottom:1rem">
       <div class="ct">План / Факт по магазинам</div>
       <div class="tw-wrap"><table>
         <tr><th>Магазин</th><th>Консультанты</th><th>Остальное</th><th>Итого факт</th><th>План</th><th>%</th></tr>
-        ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
+        ${Object.entries(shopStatsFiltered).map(([shop,ss])=>`<tr>
           <td><b>${shop}</b></td>
           <td>${fmt(ss.consultants!==undefined?ss.consultants:ss.fact)}</td>
           <td>${fmt(ss.other||0)}</td>
