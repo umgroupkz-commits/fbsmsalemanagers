@@ -645,9 +645,6 @@ window.loadReport=async function(){
     html+=`<div class="card" style="margin-bottom:1rem">
       <div class="ct">План / Факт по магазинам</div>
       <div class="tw-wrap"><table>
-        <tr><th>Магазин</th><th>Факт продаж</th><th>План магазина</th></tr>
-        ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
-          <td><b>${shop}</b></td>
         <tr><th>Магазин</th><th>Консультанты</th><th>Остальное</th><th>Итого факт</th><th>План</th><th>%</th></tr>
         ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
           <td><b>${shop}</b></td>
@@ -657,6 +654,9 @@ window.loadReport=async function(){
           <td>${ss.plan?fmt(ss.plan):"—"}</td>
           <td style="color:${barCol(ss.pct)};font-weight:700">${ss.plan?Math.round(ss.pct*100)+"%":"—"}</td>
         </tr>`).join("")}
+      </table></div>
+    </div>`;
+  }
   Object.entries(byShop).forEach(([shop,rows])=>{
     rows.sort((a,b)=>b.pct-a.pct);
     let shopTotal=0;
