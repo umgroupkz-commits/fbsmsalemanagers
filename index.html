@@ -126,6 +126,14 @@ tr:hover td{background:var(--s2)}
 <script>
 const API='https://script.google.com/macros/s/AKfycbyj3GZzlo1LMHhxbw01kWMiS_rG5u4kwmDt7kXNv4J0T2KeU4UO98Xrsi0KpUvCtGRs/exec';
 const SHOPS=['Караганда','Алматы','Асфендиярова','Манаса','Республика'];
+const REPORTS_URL='https://umgroupkz-commits.github.io/fbsm-reports/';
+const SHOP_TO_REPORT={
+  'Караганда':   'ГрандСтор (Караганда)',
+  'Алматы':      'Атакент (Алматы)',
+  'Асфендиярова':'Асф. (Астана)',
+  'Манаса':      'Манаса (Астана)',
+  'Республика':  'Респ. (Астана)',
+};
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API ══
@@ -298,7 +306,7 @@ function setupSidebar(){
       {ic:'📋',l:'История',fn:'pgHist'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'}]
     :CU.role==='manager'
     ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
-      {ic:'👤',l:'Сотрудники',fn:'pgSellers'}]
+      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
     :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
       {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
       {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
@@ -390,13 +398,13 @@ window.pgDash=async function(){
     ${(shopStats&&shopStats.plan>0)?`
     <div class="card" style="margin-bottom:1rem;border-left:3px solid #185FA5">
       <div style="font-size:13px;font-weight:600;color:var(--bd);margin-bottom:8px">📊 План магазина ${CU.shop}</div>
-      <div style="display:flex;gap:2rem;flex-wrap:wrap;font-size:13px">
-        <span>План: <b>${fmt(shopStats.plan)}</b></span>
-        <span>Факт: <b>${fmt(shopStats.fact)}</b></span>
-        <span>Выполнение: <b style="color:${barCol(shopStats.pct)}">${Math.round(shopStats.pct*100)}%</b></span>
-        <span>${shopPlanMet?'<span class="tag ts">Бонус +'+fmt(parseFloat(PARAMS.bMag)||10000)+'</span>':'<span class="tag tw">Бонус не начислен</span>'}</span>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px">
+        <div style="background:var(--s2);border-radius:var(--rs);padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">Консультанты</div><div style="font-weight:700;font-size:14px">${fmt(shopStats.consultants!==undefined?shopStats.consultants:shopStats.fact)}</div></div>
+        <div style="background:var(--s2);border-radius:var(--rs);padding:8px;text-align:center"><div style="font-size:11px;color:var(--muted)">Остальное</div><div style="font-weight:700;font-size:14px">${fmt(shopStats.other||0)}</div></div>
+        <div style="background:var(--bl);border-radius:var(--rs);padding:8px;text-align:center"><div style="font-size:11px;color:var(--bd)">Итого факт</div><div style="font-weight:700;font-size:14px;color:var(--bd)">${fmt(shopStats.fact)}</div></div>
       </div>
-      <div class="pb" style="margin-top:8px"><div class="pf" style="width:${Math.min(100,shopStats.pct*100)}%;background:#185FA5"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>План: <b>${fmt(shopStats.plan)}</b></span><span>Вып: <b style="color:${barCol(shopStats.pct)}">${Math.round(shopStats.pct*100)}%</b> ${shopPlanMet?'✅':'❌'}</span></div>
+      <div class="pb"><div class="pf" style="width:${Math.min(100,shopStats.pct*100)}%;background:#185FA5"></div></div>
     </div>`:''}
     <div class="g2">
       <div class="card" style="margin:0"><div class="ct">Прогресс к целям</div>${stages}</div>
@@ -640,12 +648,15 @@ window.loadReport=async function(){
         <tr><th>Магазин</th><th>Факт продаж</th><th>План магазина</th></tr>
         ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
           <td><b>${shop}</b></td>
-          <td>${fmt(ss.fact)}</td>
-          <td>${ss.plan?fmt(ss.plan):'—'}</td>
-        </tr>`).join('')}
-      </table></div>
-    </div>`;
-  }
+        <tr><th>Магазин</th><th>Консультанты</th><th>Остальное</th><th>Итого факт</th><th>План</th><th>%</th></tr>
+        ${Object.entries(window._shopStats).map(([shop,ss])=>`<tr>
+          <td><b>${shop}</b></td>
+          <td>${fmt(ss.consultants!==undefined?ss.consultants:ss.fact)}</td>
+          <td>${fmt(ss.other||0)}</td>
+          <td><b>${fmt(ss.fact)}</b></td>
+          <td>${ss.plan?fmt(ss.plan):"—"}</td>
+          <td style="color:${barCol(ss.pct)};font-weight:700">${ss.plan?Math.round(ss.pct*100)+"%":"—"}</td>
+        </tr>`).join("")}
   Object.entries(byShop).forEach(([shop,rows])=>{
     rows.sort((a,b)=>b.pct-a.pct);
     let shopTotal=0;
@@ -1101,6 +1112,17 @@ window.saveParams=async function(){
   L(true);await apiPost('saveParams',np);PARAMS=np;L(false);
   const m=document.getElementById('pmsg2');m.className='alert as';m.textContent='✓ Параметры сохранены';
   setTimeout(()=>m.textContent='',3000);
+}
+
+window.pgOpenReport=function(){
+  // Build URL with store and manager pre-selected
+  const reportStore = SHOP_TO_REPORT[CU.shop] || CU.shop;
+  const params = new URLSearchParams({
+    store:   reportStore,
+    manager: CU.name,
+    auto:    '1'
+  });
+  window.open(REPORTS_URL + '?' + params.toString(), '_blank');
 }
 
 init();
