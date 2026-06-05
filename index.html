@@ -306,8 +306,8 @@ function setupSidebar(){
       {ic:'📋',l:'История',fn:'pgHist'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'}]
     :CU.role==='manager'
     ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
-      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
-    :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
+      {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
+    :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
       {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
       {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
@@ -571,9 +571,16 @@ window.delEntry=async function(date){
 window.pgRating=async function(){
   nav('pgRating');setTitle('Рейтинг продавцов');setBadge('');
   setContent(`<div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px">
       <div class="ct" style="margin:0">Рейтинг продавцов — вся сеть</div>
-      <select id="rm" class="fc" style="width:auto" onchange="loadRating()">${monthsOpts(6)}</select>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="rm" class="fc" style="width:auto" onchange="loadRating()">${monthsOpts(6)}</select>
+        <select id="rsort" class="fc" style="width:auto" onchange="loadRating()">
+          <option value="sales">По выручке</option>
+          <option value="avg">По ср. чеку</option>
+          <option value="upt">По UPT</option>
+        </select>
+      </div>
     </div>
     <div id="rbody"><div class="spin" style="margin:1rem auto;display:block"></div></div>
   </div>`);
@@ -582,24 +589,36 @@ window.pgRating=async function(){
 
 window.loadRating=async function(){
   const mk=document.getElementById('rm').value;
+  const rsort=document.getElementById('rsort');
+  const sortBy=rsort?rsort.value:'sales';
   L(true);
   [_sales,_plans]=await Promise.all([api('getSales',{}),api('getPlans',{})]);
   L(false);
-  const sellers=USERS.filter(u=>u.role==='seller');
+  let sellers=USERS.filter(u=>u.role==='seller');
+  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
   const rows=sellers.map(u=>{
     const entries=getEntriesFor(u.id,mk);
-    let ts=0;entries.forEach(e=>ts+=+e.sales);
+    let ts=0,tc=0,tu=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+    const avg=tc>0?ts/tc:0;
+    const upt=tc>0?tu/tc:0;
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
-    return{name:u.name,shop:u.shop,ts,pct,isMe:u.id===CU.id};
-  }).sort((a,b)=>b.pct-a.pct);
+    return{id:u.id,name:u.name,shop:u.shop,ts,avg,upt,pct,isMe:u.id===CU.id};
+  });
+  if(sortBy==='avg') rows.sort((a,b)=>b.avg-a.avg);
+  else if(sortBy==='upt') rows.sort((a,b)=>b.upt-a.upt);
+  else rows.sort((a,b)=>b.ts-a.ts);
   let html=`<div class="tw-wrap"><table>
-    <tr><th>#</th><th>Продавец</th><th>Магазин</th><th>Продажи</th><th>%</th><th>Ранг</th></tr>`;
+    <tr><th>#</th><th>Продавец</th><th>Магазин</th><th>Выручка</th><th>Ср. чек</th><th>UPT</th><th>Ранг</th></tr>`;
   rows.forEach((r,i)=>{
-    html+=`<tr ${r.isMe?'style="background:var(--bl)"':''}>
-      <td><b>${i+1}</b></td><td>${r.name}${r.isMe?' <span class="tag ti">Вы</span>':''}</td>
-      <td>${r.shop}</td><td>${fmt(r.ts)}</td>
-      <td style="color:${barCol(r.pct)};font-weight:700">${Math.round(r.pct*100)}%</td>
+    const trStyle=r.isMe?"style='background:var(--bl)'":''
+    html+=`<tr ${trStyle}>
+      <td><b>${i+1}</b></td>
+      <td>${r.name}${r.isMe?" <span class='tag ti'>Вы</span>":""}</td>
+      <td>${r.shop}</td>
+      <td><b>${fmt(r.ts)}</b></td>
+      <td>${r.avg>0?fmt(r.avg):"—"}</td>
+      <td>${r.upt>0?r.upt.toFixed(2):"—"}</td>
       <td>${rankChip(r.pct)}</td>
     </tr>`;
   });
@@ -607,9 +626,6 @@ window.loadRating=async function(){
   document.getElementById('rbody').innerHTML=html;
 }
 
-// ══════════════════════════════════════
-// ADMIN / MANAGER — СВОДКА
-// ══════════════════════════════════════
 window.pgReport=async function(){
   nav('pgReport');setTitle('Сводка по продавцам');setBadge('');
   setContent(`<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
