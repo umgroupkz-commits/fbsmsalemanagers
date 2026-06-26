@@ -331,7 +331,8 @@ window.pgDash=async function(){
   L(false);
   const plan=getPlan(CU.id,mk);
   const entries=getEntriesFor(CU.id,mk);
-  let ts=0,tc=0,tu=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
+  ts=Math.max(0,ts-tr);
   const actualShifts=entries.length; // дней с продажами = фактические смены
   const pct=plan>0?ts/plan:0;
   // Shop plan bonus
@@ -527,7 +528,8 @@ window.loadHist=async function(){
   L(false);
   const entries=getEntriesFor(CU.id,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
   const plan=getPlan(CU.id,mk);
-  let ts=0,tc=0,tu=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
+  ts=Math.max(0,ts-tr);
   const pct=plan>0?ts/plan:0;
   let html='';
   if(!entries.length){
@@ -598,7 +600,8 @@ window.loadRating=async function(){
   if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
   const rows=sellers.map(u=>{
     const entries=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+    let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
+    ts=Math.max(0,ts-tr);
     const avg=tc>0?ts/tc:0;
     const upt=tc>0?tu/tc:0;
     const plan=getPlan(u.id,mk);
@@ -645,7 +648,8 @@ window.loadReport=async function(){
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+    let ts=0,tc=0,tu=0,tr=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
+    ts=Math.max(0,ts-tr);
     const actualShifts=ents.length;
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
@@ -720,7 +724,8 @@ window.loadPayroll=async function(){
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units});
+    let ts=0,tc=0,tu=0,tr=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
+    ts=Math.max(0,ts-tr);
     const actualShifts=ents.length;
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
