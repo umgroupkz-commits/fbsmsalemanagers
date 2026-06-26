@@ -463,6 +463,7 @@ window.pgEnter=function(){
     <div class="fg"><label class="fl">Дата</label><input type="date" id="ed" class="fc" value="${today()}"></div>
     <div class="fg"><label class="fl">Сумма продаж (₸)</label><input type="number" id="es" class="fc" placeholder="0"></div>
     <div class="fr">
+    <div class="fg"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" placeholder="0"></div>
       <div class="fg"><label class="fl">Чеков</label><input type="number" id="ec" class="fc" placeholder="0"></div>
       <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="eu" class="fc" placeholder="0"></div>
     </div>
@@ -483,6 +484,7 @@ window.loadForEdit=async function(){
     document.getElementById('es').value=e.sales||0;
     document.getElementById('ec').value=e.checks||0;
     document.getElementById('eu').value=e.units||0;
+    document.getElementById('er').value=e.returns||0;
   }else{
     const m=document.getElementById('emsg');
     m.className='alert ai';m.textContent=`Записей за ${date} не найдено`;
@@ -497,7 +499,7 @@ window.saveEntry=async function(){
   const units=parseInt(document.getElementById('eu').value)||0;
   if(!date){alert('Выберите дату');return}
   L(true);
-  await apiPost('saveSale',{uid:CU.id,date,sales,checks,units});
+  await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns:parseFloat(document.getElementById('er')?.value)||0});
   _sales=await api('getSales',{uid:CU.id});
   L(false);
   const m=document.getElementById('emsg');
@@ -505,6 +507,7 @@ window.saveEntry=async function(){
   document.getElementById('es').value='';
   document.getElementById('ec').value='';
   document.getElementById('eu').value='';
+  document.getElementById('er').value='';
   setTimeout(()=>m.textContent='',3000);
 }
 
@@ -536,9 +539,9 @@ window.loadHist=async function(){
     html='<div style="color:var(--muted);font-size:13px;padding:1rem 0">Нет записей за этот период</div>';
   }else{
     html=`<div class="tw-wrap"><table>
-      <tr><th>Дата</th><th>Продажи</th><th>Чеков</th><th>Единиц</th><th>Ср.чек</th><th></th></tr>
+      <tr><th>Дата</th><th>Продажи</th><th>Возврат</th><th>Факт</th><th>Чеков</th><th>Единиц</th><th>Ср.чек</th><th></th></tr>
       ${entries.map(e=>`<tr>
-        <td>${e.date}</td><td>${fmt(+e.sales)}</td><td>${fmtN(+e.checks)}</td><td>${fmtN(+e.units)}</td>
+        <td>${e.date}</td><td>${fmt(+e.sales)}</td><td style="color:var(--red)">${+(e.returns||0)>0?"−"+fmt(+(e.returns||0)):"—"}</td><td><b>${fmt(Math.max(0,+e.sales-+(e.returns||0)))}</b></td><td>${fmtN(+e.checks)}</td><td>${fmtN(+e.units)}</td>
         <td>${+e.checks>0?fmt(+e.sales/+e.checks):'—'}</td>
         <td style="white-space:nowrap">
           <button class="btn bsm" onclick="editEntry('${e.date}')">✏️</button>
