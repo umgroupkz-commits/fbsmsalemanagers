@@ -463,10 +463,10 @@ window.pgEnter=function(){
     <div class="fg"><label class="fl">Дата</label><input type="date" id="ed" class="fc" value="${today()}"></div>
     <div class="fg"><label class="fl">Сумма продаж (₸)</label><input type="number" id="es" class="fc" placeholder="0"></div>
     <div class="fr">
-    <div class="fg"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" placeholder="0"></div>
       <div class="fg"><label class="fl">Чеков</label><input type="number" id="ec" class="fc" placeholder="0"></div>
       <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="eu" class="fc" placeholder="0"></div>
     </div>
+    <div class="fg" style="margin-top:4px"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" placeholder="0"></div>
     <div style="display:flex;gap:8px">
       <button class="btn bp" onclick="saveEntry()">Сохранить</button>
       <button class="btn" onclick="loadForEdit()">Редактировать запись за дату</button>
