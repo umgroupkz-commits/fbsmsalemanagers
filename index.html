@@ -305,7 +305,7 @@ function setupSidebar(){
     ?[{ic:'📊',l:'Дашборд',fn:'pgDash'},{ic:'➕',l:'Ввод продаж',fn:'pgEnter'},
       {ic:'📋',l:'История',fn:'pgHist'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'}]
     :CU.role==='manager'
-    ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
+    ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💹',l:'Моя ЗП',fn:'pgMgrDash'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
       {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
     :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
       {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
@@ -723,6 +723,7 @@ window.loadPayroll=async function(){
   L(false);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
+  const managers=CU.role==='admin'?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
   const byShop={};
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
@@ -768,6 +769,29 @@ window.loadPayroll=async function(){
   });
   html+=`<div style="background:var(--bd);color:#fff;border-radius:var(--r);padding:1rem 1.25rem;font-size:16px;font-weight:700">
     Итого ФОТ по сети: ${fmt(grand)}</div>`;
+  // Manager payroll section
+  if(typeof managers !== 'undefined' && managers.length>0){
+    var mgrHtml='<div class="card" style="margin-top:1rem"><div class="ct">Начисление ЗП — Управляющие</div>';
+    mgrHtml+='<div class="alert ai" style="display:block;margin-bottom:1rem;font-size:12px">Смены по умолчанию: 22. Скорректируй при необходимости.</div>';
+    mgrHtml+='<div class="tw-wrap"><table><tr><th>Управляющий</th><th>Магазин</th><th>Факт</th><th>%</th><th>Смен</th><th>Оклад</th><th>% продаж</th><th>KPI</th><th>ИТОГО</th></tr>';
+    managers.forEach(function(m){
+      var ss2=(window._shopStats||{})[m.shop]||{fact:0,pct:0};
+      var z2=calcMgrZP(ss2.fact,0,0,ss2.pct||0,22);
+      var comm2=z2.base+z2.a80+z2.a100+z2.a140;
+      mgrHtml+='<tr><td><b>'+m.name+'</b></td><td>'+m.shop+'</td>';
+      mgrHtml+='<td>'+fmt(ss2.fact)+'</td>';
+      mgrHtml+='<td style="color:'+barCol(ss2.pct||0)+';font-weight:700">'+Math.round((ss2.pct||0)*100)+'%</td>';
+      mgrHtml+='<td><input type="number" id="mgr-s-'+m.id+'" class="fc" style="width:58px;padding:4px 6px;font-size:12px" value="22" min="1" max="31"'
+             +' oninput="rMgr(this,'+ss2.fact+','+(ss2.pct||0)+')"></td>';
+      mgrHtml+='<td id="mo-'+m.id+'">'+fmt(z2.oklad)+'</td>';
+      mgrHtml+='<td id="mp-'+m.id+'">'+fmt(comm2)+'</td>';
+      mgrHtml+='<td id="mk-'+m.id+'">'+fmt(z2.bk1+z2.bk2)+'</td>';
+      mgrHtml+='<td id="mt-'+m.id+'" style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(z2.total)+'</td>';
+      mgrHtml+='</tr>';
+    });
+    mgrHtml+='</table></div></div>';
+    html+=mgrHtml;
+  }
   document.getElementById('payBody').innerHTML=html;
 }
 
@@ -831,10 +855,11 @@ window.openEdit=function({uid,name,mk,ents}){
       <button class="btn bsm" onclick="this.closest('.ov').remove()">✕</button>
     </div>
     <div class="tw-wrap"><table>
-      <tr><th>Дата</th><th>Продажи</th><th>Чеков</th><th>Единиц</th><th></th></tr>
+      <tr><th>Дата</th><th>Продажи</th><th>Возврат</th><th>Чеков</th><th>Единиц</th><th></th></tr>
       ${sorted.map(e=>`<tr>
         <td>${normDate(e.date)}</td>
         <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px" value="${+e.sales}" data-date="${normDate(e.date)}" data-f="sales"></td>
+        <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px;width:80px;color:var(--red)" value="${+(e.returns||0)}" data-date="${normDate(e.date)}" data-f="returns"></td>
         <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px;width:70px" value="${+e.checks}" data-date="${normDate(e.date)}" data-f="checks"></td>
         <td><input type="number" class="fc" style="padding:4px 6px;font-size:12px;width:70px" value="${+e.units}" data-date="${normDate(e.date)}" data-f="units"></td>
         <td><button class="btn bsm bd2" onclick="admDelRow('${uid}','${normDate(e.date)}',this)">✕</button></td>
@@ -1117,8 +1142,23 @@ window.pgParams=function(){
       <div class="fg"><label class="fl">Норма среднего чека (₸)</label><input type="number" id="pp-avg" class="fc" value="${p.avgNorm||15000}"></div>
       <div class="fg"><label class="fl">Норма UPT</label><input type="number" id="pp-upt" class="fc" step="0.1" value="${p.uptNorm||2.5}"></div>
     </div>
-    <button class="btn bp" onclick="saveParams()">Сохранить параметры</button>
+    <button class="btn bp" onclick="saveParams()">Сохранить параметры консультантов</button>
   </div>`);
+  // Manager params section appended
+  var mgrParamsHtml='<div class="card" style="max-width:560px;margin-top:1rem">';
+  mgrParamsHtml+='<div class="ct">Параметры ЗП — Управляющие</div>';
+  mgrParamsHtml+='<div id="pmsg-mgr"></div>';
+  mgrParamsHtml+='<div class="fr"><div class="fg"><label class="fl">Оплата за смену (₸)</label><input type="number" id="mgr-rate" class="fc" value="'+(MGR_PARAMS.rate||30000)+'"></div>';
+  mgrParamsHtml+='<div class="fg"><label class="fl">Смен/мес (норма)</label><input type="number" id="mgr-shifts" class="fc" value="'+(MGR_PARAMS.shifts||22)+'"></div></div>';
+  mgrParamsHtml+='<div class="fr"><div class="fg"><label class="fl">% от продаж магазина</label><input type="number" id="mgr-base" class="fc" step="0.001" value="'+(MGR_PARAMS.base||0.005)+'"></div>';
+  mgrParamsHtml+='<div class="fg"><label class="fl">Доб. % при 80%</label><input type="number" id="mgr-p80" class="fc" step="0.001" value="'+(MGR_PARAMS.p80||0.0025)+'"></div></div>';
+  mgrParamsHtml+='<div class="fr"><div class="fg"><label class="fl">Доб. % при 100%</label><input type="number" id="mgr-p100" class="fc" step="0.001" value="'+(MGR_PARAMS.p100||0.0025)+'"></div>';
+  mgrParamsHtml+='<div class="fg"><label class="fl">Доб. % при 140%</label><input type="number" id="mgr-p140" class="fc" step="0.001" value="'+(MGR_PARAMS.p140||0.005)+'"></div></div>';
+  mgrParamsHtml+='<div class="fr"><div class="fg"><label class="fl">Бонус KPI — за каждый (₸)</label><input type="number" id="mgr-bkpi" class="fc" value="'+(MGR_PARAMS.bKpi||20000)+'"></div>';
+  mgrParamsHtml+='<div class="fg"><label class="fl">Норма ср.чека</label><input type="number" id="mgr-avg" class="fc" value="'+(MGR_PARAMS.avgNorm||15000)+'"></div></div>';
+  mgrParamsHtml+='<div class="fr"><div class="fg"><label class="fl">Норма UPT</label><input type="number" id="mgr-upt" class="fc" step="0.1" value="'+(MGR_PARAMS.uptNorm||2.5)+'"></div></div>';
+  mgrParamsHtml+='<button class="btn bp" onclick="saveMgrParamsFn()">Сохранить параметры управляющих</button></div>';
+  document.querySelector('.cnt').insertAdjacentHTML('beforeend',mgrParamsHtml);
 }
 
 window.saveParams=async function(){
@@ -1149,6 +1189,194 @@ window.pgOpenReport=function(){
   });
   window.open(REPORTS_URL + '?' + params.toString(), '_blank');
 }
+
+
+// ════════════════════════════════════════
+// УПРАВЛЯЮЩИЙ — ЗП и ранги
+// ════════════════════════════════════════
+const MGR_DEFAULTS={rate:30000,shifts:22,base:0.005,p80:0.0025,p100:0.0025,p140:0.005,bKpi:20000,avgNorm:15000,uptNorm:2.5};
+let MGR_PARAMS={...MGR_DEFAULTS};
+
+function getMgrRank(p){
+  if(p>=1.4)return{lbl:'Император',ic:'👑',col:'#BA7517',bg:'#FAEEDA'}
+  if(p>=1.0)return{lbl:'Сёгун',ic:'🏯',col:'#185FA5',bg:'#E6F1FB'}
+  if(p>=0.8)return{lbl:'Полководец',ic:'⚜️',col:'#3B6D11',bg:'#EAF3DE'}
+  if(p>=0.5)return{lbl:'Советник',ic:'📜',col:'#533F2E',bg:'#F1EFE8'}
+  return{lbl:'Чиновник',ic:'🎌',col:'#888780',bg:'#F1EFE8'}
+}
+function mgrChip(p){const r=getMgrRank(p);return '<span class="rank" style="background:'+r.bg+';color:'+r.col+'">'+r.ic+' '+r.lbl+'</span>';}
+function mgrMotiv(p){
+  if(p>=1.4)return'👑 Император! Магазин покорил 140%+. Абсолютная победа!';
+  if(p>=1.2)return'🏯 Сёгун в силе! До звания Императора — один рывок!';
+  if(p>=1.0)return'🏯 План выполнен! Каждый процент сверх — это дополнительный бонус!';
+  if(p>=0.8)return'⚜️ Полководец! Следующая цель — 100% и звание Сёгуна!';
+  if(p>=0.5)return'📜 Советник держит курс! До Полководца — рукой подать.';
+  return'🎌 Путь Чиновника начался. Магазин набирает обороты.';
+}
+function calcMgrZP(fact,checks,units,pct,shifts,p){
+  p=p||MGR_PARAMS;
+  var sh=shifts!==undefined?shifts:(parseFloat(p.shifts)||22);
+  var oklad=sh*(parseFloat(p.rate)||30000);
+  var base=fact*(parseFloat(p.base)||0.005);
+  var a80=pct>=0.8?fact*(parseFloat(p.p80)||0.0025):0;
+  var a100=pct>=1?fact*(parseFloat(p.p100)||0.0025):0;
+  var a140=pct>=1.4?fact*(parseFloat(p.p140)||0.005):0;
+  var avg=checks>0?fact/checks:0;
+  var upt=checks>0?units/checks:0;
+  var avgN=Math.min(parseFloat(p.avgNorm)||15000,999999);
+  var uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
+  var bk1=avg>=avgN?(parseFloat(p.bKpi)||20000):0;
+  var bk2=upt>=uptN?(parseFloat(p.bKpi)||20000):0;
+  return{oklad:oklad,base:base,a80:a80,a100:a100,a140:a140,bk1:bk1,bk2:bk2,
+         total:oklad+base+a80+a100+a140+bk1+bk2,avg:avg,upt:upt};
+}
+
+window.pgMgrDash=async function(){
+  nav('pgMgrDash');setTitle('Моя зарплата');setBadge('');
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  L(true);
+  var mk=curMk();
+  var results=await Promise.all([api('getShopStats',{mk:mk}),api('getPlans',{}),api('getMgrParams',{})]);
+  window._shopStats=results[0];_plans=results[1];
+  MGR_PARAMS=Object.assign({},MGR_DEFAULTS,results[2]);
+  L(false);
+
+  var ss=(window._shopStats||{})[CU.shop]||{fact:0,consultants:0,other:0,plan:0,pct:0};
+  var shopFact=ss.fact;
+  var shopPlan=ss.plan;
+  var pct=shopPlan>0?shopFact/shopPlan:0;
+  var normShifts=parseFloat(MGR_PARAMS.shifts)||22;
+
+  // Get shop KPI from seller entries
+  var sellers=USERS.filter(function(u){return u.role==='seller'&&u.shop===CU.shop;});
+  var sellerIds=sellers.map(function(u){return u.id;});
+  var entries=_sales.filter(function(s){return sellerIds.indexOf(s.uid)>=0&&normDate(s.date).startsWith(mk);});
+  var tc=0,tu=0;
+  entries.forEach(function(e){tc+=+e.checks;tu+=+e.units;});
+
+  var zp=calcMgrZP(shopFact,tc,tu,pct,normShifts);
+  setBadge(mgrChip(pct));
+
+  // Stages
+  var stages='';
+  [{p:0.8,lbl:'80% — Полководец',col:'#BA7517'},{p:1,lbl:'100% — Сёгун',col:'#185FA5'},{p:1.4,lbl:'140% — Император',col:'#639922'}]
+  .forEach(function(st){
+    var need=Math.max(0,shopPlan*st.p-shopFact);
+    var bar=Math.min(100,shopPlan>0?shopFact/(shopPlan*st.p)*100:0);
+    var sz=calcMgrZP(shopPlan>0?shopPlan*st.p:shopFact,tc,tu,st.p,normShifts);
+    stages+='<div style="margin-bottom:14px">'
+      +'<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">'
+      +'<span style="color:'+st.col+';font-weight:600">'+st.lbl+'</span>'
+      +'<span style="color:var(--muted)">'+(need>0?'ещё '+fmt(need):'✓ Выполнено')+'</span></div>'
+      +'<div class="pb"><div class="pf" style="width:'+bar+'%;background:'+st.col+'"></div></div>'
+      +'<div style="font-size:12px;color:'+st.col+';margin-top:3px">ЗП при этом уровне: <b>'+fmt(sz.total)+'</b></div>'
+      +'</div>';
+  });
+
+  // ZP breakdown
+  var zpHtml='';
+  [['Оклад ('+normShifts+' смен x '+fmt(parseFloat(MGR_PARAMS.rate)||30000)+')',zp.oklad],
+   ['% от продаж магазина',zp.base],['Доб.% 80%',zp.a80],['Доб.% 100%',zp.a100],
+   ['Доб.% 140%',zp.a140],['Бонус KPI (ср.чек)',zp.bk1],['Бонус KPI (UPT)',zp.bk2],
+   ['ИТОГО',zp.total]
+  ].forEach(function(row){zpHtml+='<div class="zpr"><span>'+row[0]+'</span><span>'+fmt(row[1])+'</span></div>';});
+
+  // Daily target
+  var now=new Date();
+  var dLeft=daysInMk(mk)-now.getDate();
+  var daily='';
+  if(shopPlan>0&&dLeft>0){
+    [{p:1,l:'100%'},{p:1.4,l:'140%'}].forEach(function(t){
+      var need=Math.max(0,shopPlan*t.p-shopFact);
+      daily+='<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">'
+        +'<span>До '+t.l+' плана</span><b>'+(need>0?fmt(need/dLeft)+'/день':'✓ Готово')+'</b></div>';
+    });
+    daily+='<div style="font-size:11px;color:var(--muted);margin-top:6px">Осталось дней: '+dLeft+'</div>';
+  } else {
+    daily='<span style="color:var(--muted);font-size:13px">'+(shopPlan===0?'План магазина не установлен':'Месяц завершён')+'</span>';
+  }
+
+  var avg=tc>0?shopFact/tc:0;
+  var upt=tc>0?tu/tc:0;
+  var avgN=Math.min(parseFloat(MGR_PARAMS.avgNorm)||15000,999999);
+  var uptN=Math.min(parseFloat(MGR_PARAMS.uptNorm)||2.5,100);
+
+  var html='<div class="motiv" style="background:var(--al);border-color:#DDB870;color:var(--amber)">'+mgrMotiv(pct)+'</div>';
+  html+='<div class="g4" style="margin-bottom:1rem">';
+  html+='<div class="metric"><div class="ml">Факт магазина</div><div class="mv" style="font-size:17px">'+fmt(shopFact)+'</div></div>';
+  html+='<div class="metric"><div class="ml">Выполнение</div><div class="mv" style="color:'+barCol(pct)+'">'+Math.round(pct*100)+'%</div></div>';
+  html+='<div class="metric"><div class="ml">ЗП сейчас</div><div class="mv" style="font-size:17px;color:var(--blue)">'+fmt(zp.total)+'</div></div>';
+  html+='<div class="metric"><div class="ml">План магазина</div><div class="mv" style="font-size:17px">'+(shopPlan>0?fmt(shopPlan):'—')+'</div></div>';
+  html+='</div>';
+  html+='<div class="g2">';
+  html+='<div class="card" style="margin:0"><div class="ct">Прогресс к целям</div>'+stages+'</div>';
+  html+='<div class="card" style="margin:0"><div class="ct">Расшифровка ЗП</div>'+zpHtml+'</div>';
+  html+='</div>';
+  html+='<div class="g2" style="margin-top:1rem">';
+  html+='<div class="card" style="margin:0"><div class="ct">KPI магазина</div>';
+  html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+  html+='<div><div style="font-size:11px;color:var(--muted)">Средний чек</div>';
+  html+='<div style="font-size:20px;font-weight:700">'+fmt(avg)+'</div>';
+  html+='<div style="font-size:11px;color:var(--muted)">норма: '+fmt(avgN)+'</div></div>';
+  html+='<div>'+(avg>=avgN?'<span class="tag ts">Бонус +'+fmt(parseFloat(MGR_PARAMS.bKpi)||20000)+'</span>':'<span class="tag tw">ещё '+fmt(avgN-avg)+'</span>')+'</div>';
+  html+='</div>';
+  html+='<div style="display:flex;justify-content:space-between;align-items:center">';
+  html+='<div><div style="font-size:11px;color:var(--muted)">UPT</div>';
+  html+='<div style="font-size:20px;font-weight:700">'+upt.toFixed(2)+'</div>';
+  html+='<div style="font-size:11px;color:var(--muted)">норма: '+uptN.toFixed(1)+'</div></div>';
+  html+='<div>'+(upt>=uptN?'<span class="tag ts">Бонус +'+fmt(parseFloat(MGR_PARAMS.bKpi)||20000)+'</span>':'<span class="tag tw">'+upt.toFixed(2)+' / '+uptN.toFixed(1)+'</span>')+'</div>';
+  html+='</div></div>';
+  html+='<div class="card" style="margin:0"><div class="ct">Нужно в день до конца месяца</div>';
+  html+=daily;
+  html+='<hr style="margin:12px 0;border:none;border-top:1px solid var(--border)">';
+  html+='<div style="font-size:13px;font-weight:600;margin-bottom:8px">Рассчитать ЗП по % выполнения</div>';
+  html+='<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">';
+  html+='<input type="number" id="mgr-scen-pct" class="fc" style="width:100px" placeholder="%" value="100" min="0">';
+  html+='<span style="color:var(--muted);font-size:13px">%</span>';
+  html+='<button class="btn bp bsm" onclick="calcMgrScen()">Рассчитать</button></div>';
+  html+='<div id="mgr-scen-result" style="font-size:14px;font-weight:600;color:var(--blue)"></div>';
+  html+='</div></div>';
+  setContent(html);
+  window._mgrDash={shopFact:shopFact,shopPlan:shopPlan,pct:pct,tc:tc,tu:tu,normShifts:normShifts};
+};
+
+window.calcMgrScen=function(){
+  var pctVal=parseFloat(document.getElementById('mgr-scen-pct').value)||0;
+  var p=pctVal/100;
+  var d=window._mgrDash||{};
+  var fact=d.shopPlan>0?d.shopPlan*p:d.shopFact;
+  var z=calcMgrZP(fact,d.tc||0,d.tu||0,p,d.normShifts||22);
+  document.getElementById('mgr-scen-result').textContent='ЗП при '+Math.round(pctVal)+'%: '+fmt(z.total);
+};
+
+window.rMgr=function(inp,shopFact,pct){
+  var uid=inp.id.replace('mgr-s-','');
+  var shifts=parseInt(inp.value)||22;
+  var z=calcMgrZP(shopFact,0,0,pct,shifts);
+  var ge=function(id){return document.getElementById(id);};
+  if(ge('mo-'+uid))ge('mo-'+uid).textContent=fmt(z.oklad);
+  if(ge('mp-'+uid))ge('mp-'+uid).textContent=fmt(z.base+z.a80+z.a100+z.a140);
+  if(ge('mk-'+uid))ge('mk-'+uid).textContent=fmt(z.bk1+z.bk2);
+  if(ge('mt-'+uid))ge('mt-'+uid).textContent=fmt(z.total);
+};
+
+window.saveMgrParamsFn=async function(){
+  var np={
+    rate:parseFloat(document.getElementById('mgr-rate').value)||30000,
+    shifts:parseInt(document.getElementById('mgr-shifts').value)||22,
+    base:parseFloat(document.getElementById('mgr-base').value)||0.005,
+    p80:parseFloat(document.getElementById('mgr-p80').value)||0.0025,
+    p100:parseFloat(document.getElementById('mgr-p100').value)||0.0025,
+    p140:parseFloat(document.getElementById('mgr-p140').value)||0.005,
+    bKpi:parseFloat(document.getElementById('mgr-bkpi').value)||20000,
+    avgNorm:parseFloat(document.getElementById('mgr-avg').value)||15000,
+    uptNorm:parseFloat(document.getElementById('mgr-upt').value)||2.5,
+  };
+  L(true);await apiPost('saveMgrParams',np);MGR_PARAMS=np;L(false);
+  var m=document.getElementById('pmsg-mgr');
+  m.className='alert as';m.textContent='✓ Параметры управляющих сохранены';
+  setTimeout(function(){m.textContent='';},3000);
+};
 
 init();
 </script>
