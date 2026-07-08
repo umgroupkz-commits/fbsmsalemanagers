@@ -829,7 +829,7 @@ window.loadPayroll=async function(forceRefresh){
   if(uaEl2) uaEl2.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
 
   const sellers=getVisibleSellers();
-  const managers=CU.role==='admin'?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
+  const managers=(CU.role==='admin'||CU.role==='accountant')?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
 
   window._payrollRows=[]; // сброс для экспорта
 
@@ -979,14 +979,24 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
     ? '<div class="alert aw" style="display:block;background:var(--al);color:var(--amber);margin-bottom:10px;font-size:12px">Сумма продаж скорректирована для расчёта: '+fmt(zp.salesForTiers||zp.factForTiers)+' (реальная: '+fmt(ts)+')</div>'
     : '';
 
-  // Текст для WhatsApp
+  // Текст для WhatsApp — та же расшифровка, что и в визуальном квитке
   let waText='Расчётный лист — '+name+'\n';
   waText+='Магазин: '+shop+'\nПериод: '+mkLbl+'\n\n';
   waText+='Продажи (факт): '+fmt(ts)+'\n';
   waText+='План: '+(plan?fmt(plan):'—')+'\n';
   waText+='Выполнение: '+Math.round(zp.pctUsed*100)+'%\n';
   waText+='Средний чек: '+fmt(avg)+'\nUPT: '+upt.toFixed(2)+'\n\n';
-  waText+='Начислено: '+fmt(zp.total)+'\n';
+  waText+=oklaLbl+': '+fmt(zp.oklad)+'\n';
+  waText+='% от продаж ('+baseR+'): +'+fmt(zp.base)+'\n';
+  waText+='Доб. % при 80% ('+p80R+'): +'+fmt(zp.a80)+'\n';
+  waText+='Доб. % при 100% ('+p100R+'): +'+fmt(zp.a100)+'\n';
+  waText+='Доб. % при 140% ('+p140R+'): +'+fmt(zp.a140)+'\n';
+  if(!isMgr){
+    waText+='Бонус за план магазина ('+bMagVal+'): +'+fmt(zp.bMag)+'\n';
+  }
+  waText+='Бонус KPI — средний чек ('+bKpiVal+'): +'+fmt(zp.bk1)+'\n';
+  waText+='Бонус KPI — UPT ('+bKpiVal+'): +'+fmt(zp.bk2)+'\n';
+  waText+='\nИтого начислено: '+fmt(zp.total)+'\n';
   if(advance>0) waText+='Аванс: -'+fmt(advance)+'\n';
   if(pension>0) waText+='Пенсионные: -'+fmt(pension)+'\n';
   if(fines>0)   waText+='Штрафы: -'+fmt(fines)+'\n';
