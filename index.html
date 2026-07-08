@@ -210,41 +210,65 @@ function motiv(p){
   return'🌱 Путь Искателя начался! Введи продажи и наблюдай, как растёт зарплата!'
 }
 
+// Базовые параметры сетки продавца (использовались как магические числа
+// в старом коде — теперь одно место истины, аналогично MGR_DEFAULTS ниже).
+const SELLER_DEFAULTS={rate:6000,shifts:15,base:0.01,p80:0.005,p100:0.015,p140:0.03,bMag:10000,bKpi:10000,avgNorm:15000,uptNorm:2.5};
+
+// Общее ядро расчёта ЗП — "лестница" бонусов 80/100/140% и KPI,
+// на которой строятся все варианты (прогноз / факт / с корректировкой,
+// для продавца и для управляющего). Различия между вызывающими функциями
+// передаются через params/opts, а не дублируют формулы заново.
+//
+// opts:
+//   defaults     — объект с дефолтными значениями ставок (SELLER_DEFAULTS/MGR_DEFAULTS)
+//   hasShopBonus — есть ли отдельный бонус за план магазина (да у продавца, нет у управляющего)
+//   capUpt       — ограничивать ли uptNorm потолком 100 (сохранено как в оригинале:
+//                  прогнозная calcZP этого не делала, остальные — делали)
+//   capAvgAt     — потолок для avgNorm, или null если без ограничения (сохранено:
+//                  у управляющего исторически стоял потолок 999999, у продавца — нет)
+function computeZPCore(amountForTiers,avgAmount,checks,units,pct,p,opts){
+  const d=opts.defaults;
+  const rate=parseFloat(p.rate)||d.rate;
+  const base=amountForTiers*(parseFloat(p.base)||d.base);
+  const a80=pct>=0.8?amountForTiers*(parseFloat(p.p80)||d.p80):0;
+  const a100=pct>=1?amountForTiers*(parseFloat(p.p100)||d.p100):0;
+  const a140=pct>=1.4?amountForTiers*(parseFloat(p.p140)||d.p140):0;
+
+  const avg=checks>0?avgAmount/checks:0;
+  const upt=checks>0?units/checks:0;
+  const avgN=opts.capAvgAt!=null?Math.min(parseFloat(p.avgNorm)||d.avgNorm,opts.capAvgAt):(parseFloat(p.avgNorm)||d.avgNorm);
+  const uptNraw=parseFloat(p.uptNorm)||d.uptNorm;
+  const uptN=opts.capUpt?Math.min(uptNraw,100):uptNraw;
+  const bk1=avg>=avgN?(parseFloat(p.bKpi)||d.bKpi):0;
+  const bk2=upt>=uptN?(parseFloat(p.bKpi)||d.bKpi):0;
+
+  const bMag=opts.hasShopBonus?(opts.shopBonusOn?(parseFloat(p.bMag)||d.bMag):0):0;
+
+  const base_total=rate*opts.shifts+base+a80+a100+a140+bMag+bk1+bk2;
+  const result={oklad:rate*opts.shifts,base,a80,a100,a140,bk1,bk2,total:base_total,avg,upt};
+  if(opts.hasShopBonus) result.bMag=bMag;
+  return result;
+}
+
 function calcZP(sales,checks,units,pct,p){
   p=p||PARAMS;
-  const shifts=parseFloat(p.shifts)||15;
-  const rate=parseFloat(p.rate)||6000;
+  const shifts=parseFloat(p.shifts)||SELLER_DEFAULTS.shifts;
   // Фактические смены = количество дней с продажами (передаётся отдельно)
   // В прогнозе используем норму смен
-  const oklad=shifts*rate;
-  const base=sales*(parseFloat(p.base)||0.01);
-  const a80=pct>=0.8?sales*(parseFloat(p.p80)||0.005):0;
-  const a100=pct>=1?sales*(parseFloat(p.p100)||0.015):0;
-  const a140=pct>=1.4?sales*(parseFloat(p.p140)||0.03):0;
-  const bMag=pct>=1?(parseFloat(p.bMag)||10000):0;
-  const avg=checks>0?sales/checks:0;
-  const upt=checks>0?units/checks:0;
-  const bk1=avg>=(parseFloat(p.avgNorm)||15000)?(parseFloat(p.bKpi)||10000):0;
-  const bk2=upt>=(parseFloat(p.uptNorm)||2.5)?(parseFloat(p.bKpi)||10000):0;
-  return{oklad,base,a80,a100,a140,bMag,bk1,bk2,total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
+  return computeZPCore(sales,sales,checks,units,pct,p,{
+    defaults:SELLER_DEFAULTS,shifts,hasShopBonus:true,shopBonusOn:pct>=1,
+    capUpt:false,capAvgAt:null, // как в оригинале: прогноз без ограничения uptNorm
+  });
 }
 
 function calcZPActual(sales,checks,units,pct,actualShifts,shopPlanMet,p){
   if(typeof shopPlanMet==='object'&&shopPlanMet!==null&&!p){p=shopPlanMet;shopPlanMet=undefined;}
   p=p||PARAMS;
-  const rate=parseFloat(p.rate)||6000;
-  const oklad=actualShifts*rate;
-  const base=sales*(parseFloat(p.base)||0.01);
-  const a80=pct>=0.8?sales*(parseFloat(p.p80)||0.005):0;
-  const a100=pct>=1?sales*(parseFloat(p.p100)||0.015):0;
-  const a140=pct>=1.4?sales*(parseFloat(p.p140)||0.03):0;
-  const bMag=(shopPlanMet!==undefined?shopPlanMet:(pct>=1))?(parseFloat(p.bMag)||10000):0;
-  const avg=checks>0?sales/checks:0;
-  const upt=checks>0?units/checks:0;
-  const uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
-  const bk1=avg>=(parseFloat(p.avgNorm)||15000)?(parseFloat(p.bKpi)||10000):0;
-  const bk2=upt>=uptN?(parseFloat(p.bKpi)||10000):0;
-  return{oklad,base,a80,a100,a140,bMag,bk1,bk2,total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
+  const shopBonusOn=shopPlanMet!==undefined?shopPlanMet:(pct>=1);
+  return computeZPCore(sales,sales,checks,units,pct,p,{
+    defaults:SELLER_DEFAULTS,shifts:actualShifts,hasShopBonus:true,shopBonusOn,
+    capUpt:true,capAvgAt:null,
+  });
 }
 
 // ЗП с корректировкой перед начислением: скорректированная сумма продаж
@@ -255,43 +279,30 @@ function calcZPCorrected(realSales,checks,units,correctedSales,plan,actualShifts
   const salesForTiers=(correctedSales!==null&&correctedSales!==undefined&&correctedSales!=='')
     ?parseFloat(correctedSales):realSales;
   const pct=plan>0?salesForTiers/plan:0;
-  const rate=parseFloat(p.rate)||6000;
-  const oklad=actualShifts*rate;
-  const base=salesForTiers*(parseFloat(p.base)||0.01);
-  const a80=pct>=0.8?salesForTiers*(parseFloat(p.p80)||0.005):0;
-  const a100=pct>=1?salesForTiers*(parseFloat(p.p100)||0.015):0;
-  const a140=pct>=1.4?salesForTiers*(parseFloat(p.p140)||0.03):0;
-  const bMag=(shopPlanMet!==undefined?shopPlanMet:(pct>=1))?(parseFloat(p.bMag)||10000):0;
-  // KPI — от реальных данных, корректировка их не касается
-  const avg=checks>0?realSales/checks:0;
-  const upt=checks>0?units/checks:0;
-  const uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
-  const bk1=avg>=(parseFloat(p.avgNorm)||15000)?(parseFloat(p.bKpi)||10000):0;
-  const bk2=upt>=uptN?(parseFloat(p.bKpi)||10000):0;
-  return{oklad,base,a80,a100,a140,bMag,bk1,bk2,
-    total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt,pctUsed:pct,salesForTiers};
+  const shopBonusOn=shopPlanMet!==undefined?shopPlanMet:(pct>=1);
+  const r=computeZPCore(salesForTiers,realSales,checks,units,pct,p,{
+    defaults:SELLER_DEFAULTS,shifts:actualShifts,hasShopBonus:true,shopBonusOn,
+    capUpt:true,capAvgAt:null,
+  });
+  r.pctUsed=pct;r.salesForTiers=salesForTiers;
+  return r;
 }
 
-// Аналог для управляющих — то же самое, но по логике calcMgrZP
+// Аналог для управляющих — то же общее ядро computeZPCore, но без
+// бонуса за план магазина (у управляющего его нет) и со своими
+// дефолтными ставками (MGR_DEFAULTS определён ниже в файле).
 function calcMgrZPCorrected(realFact,checks,units,correctedFact,plan,shifts,p){
   p=p||MGR_PARAMS;
   const factForTiers=(correctedFact!==null&&correctedFact!==undefined&&correctedFact!=='')
     ?parseFloat(correctedFact):realFact;
   const pct=plan>0?factForTiers/plan:0;
-  const sh=shifts!==undefined?shifts:(parseFloat(p.shifts)||22);
-  const oklad=sh*(parseFloat(p.rate)||30000);
-  const base=factForTiers*(parseFloat(p.base)||0.005);
-  const a80=pct>=0.8?factForTiers*(parseFloat(p.p80)||0.0025):0;
-  const a100=pct>=1?factForTiers*(parseFloat(p.p100)||0.0025):0;
-  const a140=pct>=1.4?factForTiers*(parseFloat(p.p140)||0.005):0;
-  const avg=checks>0?realFact/checks:0;
-  const upt=checks>0?units/checks:0;
-  const avgN=Math.min(parseFloat(p.avgNorm)||15000,999999);
-  const uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
-  const bk1=avg>=avgN?(parseFloat(p.bKpi)||20000):0;
-  const bk2=upt>=uptN?(parseFloat(p.bKpi)||20000):0;
-  return{oklad,base,a80,a100,a140,bk1,bk2,
-    total:oklad+base+a80+a100+a140+bk1+bk2,avg,upt,pctUsed:pct,factForTiers};
+  const sh=shifts!==undefined?shifts:(parseFloat(p.shifts)||MGR_DEFAULTS.shifts);
+  const r=computeZPCore(factForTiers,realFact,checks,units,pct,p,{
+    defaults:MGR_DEFAULTS,shifts:sh,hasShopBonus:false,shopBonusOn:false,
+    capUpt:true,capAvgAt:999999,
+  });
+  r.pctUsed=pct;r.factForTiers=factForTiers;
+  return r;
 }
 
 function getPlan(uid,mk){
@@ -300,6 +311,14 @@ function getPlan(uid,mk){
 }
 function getEntriesFor(uid,mk){
   return _sales.filter(s=>String(s.uid)===String(uid)&&normDate(s.date).startsWith(mk));
+}
+// Продавцы, видимые текущему пользователю: управляющий видит только
+// своих (по магазину), администратор и бухгалтер — всех. Раньше эти
+// две строки были продублированы в трёх разных местах.
+function getVisibleSellers(){
+  let sellers=USERS.filter(u=>u.role==='seller');
+  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  return sellers;
 }
 
 // ══ MONTHS SELECT ══
@@ -671,8 +690,7 @@ window.loadRating=async function(){
   const bundle=await api('getBundle',{mk});
   _sales=bundle.sales;_plans=bundle.plans;
   L(false);
-  let sellers=USERS.filter(u=>u.role==='seller');
-  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  const sellers=getVisibleSellers();
   const rows=sellers.map(u=>{
     const entries=getEntriesFor(u.id,mk);
     let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
@@ -722,8 +740,7 @@ window.loadReport=async function(forceRefresh){
   L(false);
   const uaEl=document.getElementById('repUpdatedAt');
   if(uaEl) uaEl.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
-  let sellers=USERS.filter(u=>u.role==='seller');
-  if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
+  const sellers=getVisibleSellers();
   const byShop={};
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
@@ -811,8 +828,7 @@ window.loadPayroll=async function(forceRefresh){
   const uaEl2=document.getElementById('payUpdatedAt');
   if(uaEl2) uaEl2.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
 
-  let sellers=USERS.filter(u=>u.role==='seller');
-  if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
+  const sellers=getVisibleSellers();
   const managers=CU.role==='admin'?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
 
   window._payrollRows=[]; // сброс для экспорта
@@ -1148,7 +1164,10 @@ window.renderDeletedUsers=async function(){
     ${deleted.map(u=>`<tr>
       <td>${u.name}</td><td>${u.shop||'—'}</td><td>${rm[u.role]||u.role}</td>
       <td style="font-size:12px;color:var(--muted)">${u.deleted_at?new Date(u.deleted_at).toLocaleDateString('ru-RU'):'—'}</td>
-      <td><button class="btn bsm bp" onclick="restoreUserClick('${u.id}')">♻️ Восстановить</button></td>
+      <td style="white-space:nowrap">
+        <button class="btn bsm bp" onclick="restoreUserClick('${u.id}')">♻️ Восстановить</button>
+        <button class="btn bsm bd2" onclick="hardDeleteClick('${u.id}','${u.name}')">🗑️ Удалить навсегда</button>
+      </td>
     </tr>`).join('')}
   </table></div>`;
 }
@@ -1162,6 +1181,20 @@ window.restoreUserClick=async function(id){
     [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${u.name}</option>`});}
   L(false);
   renderSellers();
+  renderDeletedUsers();
+}
+
+window.hardDeleteClick=async function(id,name){
+  if(!confirm('Окончательно удалить «'+name+'»?\n\nЭто действие НЕЛЬЗЯ отменить. Восстановить будет невозможно.\nИстория продаж этого сотрудника останется в базе, но сам сотрудник исчезнет безвозвратно.'))return;
+  L(true);
+  try{
+    await apiPost('hardDeleteUser',{id});
+  }catch(e){
+    L(false);
+    alert('Ошибка: '+e.message);
+    return;
+  }
+  L(false);
   renderDeletedUsers();
 }
 
@@ -1454,20 +1487,11 @@ function mgrMotiv(p){
 }
 function calcMgrZP(fact,checks,units,pct,shifts,p){
   p=p||MGR_PARAMS;
-  var sh=shifts!==undefined?shifts:(parseFloat(p.shifts)||22);
-  var oklad=sh*(parseFloat(p.rate)||30000);
-  var base=fact*(parseFloat(p.base)||0.005);
-  var a80=pct>=0.8?fact*(parseFloat(p.p80)||0.0025):0;
-  var a100=pct>=1?fact*(parseFloat(p.p100)||0.0025):0;
-  var a140=pct>=1.4?fact*(parseFloat(p.p140)||0.005):0;
-  var avg=checks>0?fact/checks:0;
-  var upt=checks>0?units/checks:0;
-  var avgN=Math.min(parseFloat(p.avgNorm)||15000,999999);
-  var uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
-  var bk1=avg>=avgN?(parseFloat(p.bKpi)||20000):0;
-  var bk2=upt>=uptN?(parseFloat(p.bKpi)||20000):0;
-  return{oklad:oklad,base:base,a80:a80,a100:a100,a140:a140,bk1:bk1,bk2:bk2,
-         total:oklad+base+a80+a100+a140+bk1+bk2,avg:avg,upt:upt};
+  const sh=shifts!==undefined?shifts:(parseFloat(p.shifts)||MGR_DEFAULTS.shifts);
+  return computeZPCore(fact,fact,checks,units,pct,p,{
+    defaults:MGR_DEFAULTS,shifts:sh,hasShopBonus:false,shopBonusOn:false,
+    capUpt:true,capAvgAt:999999,
+  });
 }
 
 window.pgMgrDash=async function(forceRefresh){
