@@ -86,8 +86,10 @@ tr:hover td{background:var(--s2)}
 .print-only{display:none}
 @media print{.sb,.mh,.btn,.nav-item{display:none!important}.print-only{display:block}.cnt{padding:0}}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
+
 
 <div id="loader" class="loader"><div class="spin"></div> Загрузка...</div>
 
@@ -245,6 +247,53 @@ function calcZPActual(sales,checks,units,pct,actualShifts,shopPlanMet,p){
   return{oklad,base,a80,a100,a140,bMag,bk1,bk2,total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt};
 }
 
+// ЗП с корректировкой перед начислением: скорректированная сумма продаж
+// влияет ТОЛЬКО на % от продаж и пороговые бонусы (80/100/140%,бонус плана),
+// а KPI (средний чек, UPT) считаются от РЕАЛЬНЫХ данных — они не меняются.
+function calcZPCorrected(realSales,checks,units,correctedSales,plan,actualShifts,shopPlanMet,p){
+  p=p||PARAMS;
+  const salesForTiers=(correctedSales!==null&&correctedSales!==undefined&&correctedSales!=='')
+    ?parseFloat(correctedSales):realSales;
+  const pct=plan>0?salesForTiers/plan:0;
+  const rate=parseFloat(p.rate)||6000;
+  const oklad=actualShifts*rate;
+  const base=salesForTiers*(parseFloat(p.base)||0.01);
+  const a80=pct>=0.8?salesForTiers*(parseFloat(p.p80)||0.005):0;
+  const a100=pct>=1?salesForTiers*(parseFloat(p.p100)||0.015):0;
+  const a140=pct>=1.4?salesForTiers*(parseFloat(p.p140)||0.03):0;
+  const bMag=(shopPlanMet!==undefined?shopPlanMet:(pct>=1))?(parseFloat(p.bMag)||10000):0;
+  // KPI — от реальных данных, корректировка их не касается
+  const avg=checks>0?realSales/checks:0;
+  const upt=checks>0?units/checks:0;
+  const uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
+  const bk1=avg>=(parseFloat(p.avgNorm)||15000)?(parseFloat(p.bKpi)||10000):0;
+  const bk2=upt>=uptN?(parseFloat(p.bKpi)||10000):0;
+  return{oklad,base,a80,a100,a140,bMag,bk1,bk2,
+    total:oklad+base+a80+a100+a140+bMag+bk1+bk2,avg,upt,pctUsed:pct,salesForTiers};
+}
+
+// Аналог для управляющих — то же самое, но по логике calcMgrZP
+function calcMgrZPCorrected(realFact,checks,units,correctedFact,plan,shifts,p){
+  p=p||MGR_PARAMS;
+  const factForTiers=(correctedFact!==null&&correctedFact!==undefined&&correctedFact!=='')
+    ?parseFloat(correctedFact):realFact;
+  const pct=plan>0?factForTiers/plan:0;
+  const sh=shifts!==undefined?shifts:(parseFloat(p.shifts)||22);
+  const oklad=sh*(parseFloat(p.rate)||30000);
+  const base=factForTiers*(parseFloat(p.base)||0.005);
+  const a80=pct>=0.8?factForTiers*(parseFloat(p.p80)||0.0025):0;
+  const a100=pct>=1?factForTiers*(parseFloat(p.p100)||0.0025):0;
+  const a140=pct>=1.4?factForTiers*(parseFloat(p.p140)||0.005):0;
+  const avg=checks>0?realFact/checks:0;
+  const upt=checks>0?units/checks:0;
+  const avgN=Math.min(parseFloat(p.avgNorm)||15000,999999);
+  const uptN=Math.min(parseFloat(p.uptNorm)||2.5,100);
+  const bk1=avg>=avgN?(parseFloat(p.bKpi)||20000):0;
+  const bk2=upt>=uptN?(parseFloat(p.bKpi)||20000):0;
+  return{oklad,base,a80,a100,a140,bk1,bk2,
+    total:oklad+base+a80+a100+a140+bk1+bk2,avg,upt,pctUsed:pct,factForTiers};
+}
+
 function getPlan(uid,mk){
   const r=_plans.find(p=>String(p.uid)===String(uid)&&normMk(p.mk)===normMk(mk));
   return r?parseFloat(r.amount)||0:0;
@@ -327,13 +376,17 @@ function setupSidebar(){
     :CU.role==='manager'
     ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💹',l:'Моя ЗП',fn:'pgMgrDash'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
       {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
+    :CU.role==='accountant'
+    ?[{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'}]
     :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
       {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
       {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
     `<button class="ni" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:20px">${i.ic}</span>${i.l}</button>`
   ).join('');
-  if(CU.role==='seller')pgDash();else pgReport();
+  if(CU.role==='seller')pgDash();
+  else if(CU.role==='accountant')pgPayroll();
+  else pgReport();
 }
 
 // ══════════════════════════════════════
@@ -733,26 +786,37 @@ window.loadReport=async function(forceRefresh){
 // ══ НАЧИСЛЕНИЕ ЗП ══
 window.pgPayroll=async function(){
   nav('pgPayroll');setTitle('Начисление зарплат');setBadge('');
-  setContent(`<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
-    <select id="payMk" class="fc" style="width:auto" onchange="loadPayroll()">${monthsOpts(6)}</select>
-    <button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>
-    <span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>
-    <span style="font-size:13px;color:var(--muted)">Нажми ✏️ для корректировки данных или 🖨️ для квитка</span>
-  </div><div id="payBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
+  setContent('<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">'
+    +'<select id="payMk" class="fc" style="width:auto" onchange="loadPayroll()">'+monthsOpts(6)+'</select>'
+    +'<button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>'
+    +'<span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>'
+    +'<button class="btn bsm" onclick="exportPayrollExcel()" title="Экспорт всех начислений в Excel">📊 Экспорт в Excel</button>'
+    +'<span style="font-size:13px;color:var(--muted)">✏️ — правка по дням · 💵 — корректировка перед начислением · 🖨️ — квиток</span>'
+    +'</div><div id="payBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>');
   await loadPayroll();
 }
+
+window._payrollRows=[]; // хранится для экспорта в Excel
 
 window.loadPayroll=async function(forceRefresh){
   const mk=document.getElementById('payMk').value;
   L(true);
-  const bundle=await api('getBundle',{mk,needShopStats:1,forceRefresh:forceRefresh?1:0});
+  const bundle=await api('getBundle',{mk,needShopStats:1,needMgrParams:1,needAdjustments:1,forceRefresh:forceRefresh?1:0});
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
+  MGR_PARAMS=Object.assign({},MGR_DEFAULTS,bundle.mgrParams||{});
+  const adjList=bundle.adjustments||[];
+  const adjMap={};
+  adjList.forEach(a=>{adjMap[a.uid]=a;});
   L(false);
   const uaEl2=document.getElementById('payUpdatedAt');
   if(uaEl2) uaEl2.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
+
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
   const managers=CU.role==='admin'?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
+
+  window._payrollRows=[]; // сброс для экспорта
+
   const byShop={};
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
@@ -761,61 +825,92 @@ window.loadPayroll=async function(forceRefresh){
     ts=Math.max(0,ts-tr);
     const actualShifts=ents.length;
     const plan=getPlan(u.id,mk);
-    const pct=plan>0?ts/plan:0;
     const ss=(window._shopStats||{})[u.shop]||{plan:0,fact:0,pct:0};
     const shopMet=ss.plan>0&&ss.fact>=ss.plan;
-    const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopMet);
-    byShop[u.shop].push({...u,ts,tc,tu,plan,pct,zp,actualShifts,ents,shopMet});
+    const adj=adjMap[u.id]||{corrected_sales:null,advance:0,pension:0,fines:0};
+    const zp=calcZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,shopMet);
+    const payout=zp.total-(+adj.advance||0)-(+adj.pension||0)-(+adj.fines||0);
+    byShop[u.shop].push({...u,ts,tc,tu,plan,zp,actualShifts,ents,shopMet,adj,payout});
   });
+
   let html='';let grand=0;
   Object.entries(byShop).forEach(([shop,rows])=>{
     let shopZP=0;
-    html+=`<div class="card"><div class="ct">${shop}</div>
-      <div class="tw-wrap"><table>
-      <tr><th>Продавец</th><th>Продажи</th><th>%</th><th>Смен</th><th>Оклад</th><th>% от продаж</th><th>Бонусы</th><th>ИТОГО ЗП</th><th></th></tr>`;
+    html+='<div class="card"><div class="ct">'+shop+'</div>'
+      +'<div class="tw-wrap"><table>'
+      +'<tr><th>Продавец</th><th>Продажи</th><th>%</th><th>Смен</th><th>Оклад</th><th>% от продаж</th><th>Бонусы</th><th>Вычеты</th><th>К ВЫПЛАТЕ</th><th></th></tr>';
     rows.forEach(r=>{
       const z=r.zp;
       const commision=z.base+z.a80+z.a100+z.a140;
       const bonus=z.bMag+z.bk1+z.bk2;
-      shopZP+=z.total;grand+=z.total;
-      html+=`<tr>
-        <td><b>${r.name}</b></td><td>${fmt(r.ts)}</td>
-        <td style="color:${barCol(r.pct)};font-weight:700">${Math.round(r.pct*100)}%</td>
-        <td>${r.actualShifts}</td>
-        <td>${fmt(z.oklad)}</td>
-        <td>${fmt(commision)}</td>
-        <td>${fmt(bonus)}</td>
-        <td style="font-weight:700;font-size:15px;color:var(--blue)">${fmt(z.total)}</td>
-        <td style="white-space:nowrap">
-          <button class="btn bsm" onclick='openEdit(${JSON.stringify({uid:r.id,name:r.name,mk,ents:r.ents})})'>✏️</button>
-          <button class="btn bsm" onclick='openSlip(${JSON.stringify({name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,pct:r.pct,actualShifts:r.actualShifts,shopMet:r.shopMet})})'>🖨️</button>
-        </td>
-      </tr>`;
+      const deductions=(+r.adj.advance||0)+(+r.adj.pension||0)+(+r.adj.fines||0);
+      shopZP+=r.payout;grand+=r.payout;
+      const hasCorrection=r.adj.corrected_sales!==null&&r.adj.corrected_sales!==undefined;
+      window._payrollRows.push({
+        name:r.name,role:'Продавец',shop:r.shop,shifts:r.actualShifts,
+        oklad:z.oklad,pct:commision,bonus:bonus,
+        advance:+r.adj.advance||0,pension:+r.adj.pension||0,fines:+r.adj.fines||0,
+        total:z.total,payout:r.payout
+      });
+      html+='<tr'+(hasCorrection?' style="background:var(--al)"':'')+'>'
+        +'<td><b>'+r.name+'</b>'+(hasCorrection?' <span class="tag tw" title="Сумма продаж скорректирована">✎</span>':'')+'</td>'
+        +'<td>'+fmt(z.salesForTiers)+'</td>'
+        +'<td style="color:'+barCol(z.pctUsed)+';font-weight:700">'+Math.round(z.pctUsed*100)+'%</td>'
+        +'<td>'+r.actualShifts+'</td>'
+        +'<td>'+fmt(z.oklad)+'</td>'
+        +'<td>'+fmt(commision)+'</td>'
+        +'<td>'+fmt(bonus)+'</td>'
+        +'<td style="color:var(--red)">'+(deductions>0?'−'+fmt(deductions):'—')+'</td>'
+        +'<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(r.payout)+'</td>'
+        +'<td style="white-space:nowrap">'
+        +'<button class="btn bsm" onclick=\'openEdit('+JSON.stringify({uid:r.id,name:r.name,mk,ents:r.ents})+')\'>✏️</button>'
+        +'<button class="btn bsm" onclick=\'openAdjust('+JSON.stringify({uid:r.id,name:r.name,mk,realSales:r.ts,role:"seller"})+')\'>💵</button>'
+        +'<button class="btn bsm" onclick=\'openSlip('+JSON.stringify({uid:r.id,name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,actualShifts:r.actualShifts,shopMet:r.shopMet,role:"seller"})+')\'>🖨️</button>'
+        +'</td></tr>';
     });
-    html+=`</table></div>
-      <div style="font-size:13px;color:var(--muted);margin-top:8px">ФОТ магазина: <b style="color:var(--blue)">${fmt(shopZP)}</b></div>
-    </div>`;
+    html+='</table></div>'
+      +'<div style="font-size:13px;color:var(--muted);margin-top:8px">ФОТ магазина (к выплате): <b style="color:var(--blue)">'+fmt(shopZP)+'</b></div>'
+      +'</div>';
   });
-  html+=`<div style="background:var(--bd);color:#fff;border-radius:var(--r);padding:1rem 1.25rem;font-size:16px;font-weight:700">
-    Итого ФОТ по сети: ${fmt(grand)}</div>`;
-  // Manager payroll section
-  if(typeof managers !== 'undefined' && managers.length>0){
-    var mgrHtml='<div class="card" style="margin-top:1rem"><div class="ct">Начисление ЗП — Управляющие</div>';
-    mgrHtml+='<div class="alert ai" style="display:block;margin-bottom:1rem;font-size:12px">Смены по умолчанию: 22. Скорректируй при необходимости.</div>';
-    mgrHtml+='<div class="tw-wrap"><table><tr><th>Управляющий</th><th>Магазин</th><th>Факт</th><th>%</th><th>Смен</th><th>Оклад</th><th>% продаж</th><th>KPI</th><th>ИТОГО</th></tr>';
+  html+='<div style="background:var(--bd);color:#fff;border-radius:var(--r);padding:1rem 1.25rem;font-size:16px;font-weight:700">'
+    +'Итого ФОТ по сети (к выплате): '+fmt(grand)+'</div>';
+
+  // ── Управляющие ──
+  if(managers.length>0){
+    let mgrHtml='<div class="card" style="margin-top:1rem"><div class="ct">Начисление ЗП — Управляющие</div>';
+    mgrHtml+='<div class="alert ai" style="display:block;margin-bottom:1rem;font-size:12px">Смены по умолчанию: 22.</div>';
+    mgrHtml+='<div class="tw-wrap"><table><tr><th>Управляющий</th><th>Магазин</th><th>Факт</th><th>%</th><th>Смен</th><th>Оклад</th><th>% продаж</th><th>KPI</th><th>Вычеты</th><th>К ВЫПЛАТЕ</th><th></th></tr>';
     managers.forEach(function(m){
-      var ss2=(window._shopStats||{})[m.shop]||{fact:0,pct:0};
-      var z2=calcMgrZP(ss2.fact,0,0,ss2.pct||0,22);
-      var comm2=z2.base+z2.a80+z2.a100+z2.a140;
-      mgrHtml+='<tr><td><b>'+m.name+'</b></td><td>'+m.shop+'</td>';
-      mgrHtml+='<td>'+fmt(ss2.fact)+'</td>';
-      mgrHtml+='<td style="color:'+barCol(ss2.pct||0)+';font-weight:700">'+Math.round((ss2.pct||0)*100)+'%</td>';
-      mgrHtml+='<td><input type="number" id="mgr-s-'+m.id+'" class="fc" style="width:58px;padding:4px 6px;font-size:12px" value="22" min="1" max="31"'
-             +' oninput="rMgr(this,'+ss2.fact+','+(ss2.pct||0)+')"></td>';
-      mgrHtml+='<td id="mo-'+m.id+'">'+fmt(z2.oklad)+'</td>';
-      mgrHtml+='<td id="mp-'+m.id+'">'+fmt(comm2)+'</td>';
-      mgrHtml+='<td id="mk-'+m.id+'">'+fmt(z2.bk1+z2.bk2)+'</td>';
-      mgrHtml+='<td id="mt-'+m.id+'" style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(z2.total)+'</td>';
+      const ss2=(window._shopStats||{})[m.shop]||{fact:0,pct:0,plan:0};
+      const sellerIds=USERS.filter(u=>u.role==='seller'&&u.shop===m.shop).map(u=>u.id);
+      let mtc=0,mtu=0;
+      sellerIds.forEach(sid=>{getEntriesFor(sid,mk).forEach(e=>{mtc+=+e.checks;mtu+=+e.units;});});
+      const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,fines:0};
+      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,22);
+      const comm2=z2.base+z2.a80+z2.a100+z2.a140;
+      const mdeductions=(+adj.advance||0)+(+adj.pension||0)+(+adj.fines||0);
+      const mpayout=z2.total-mdeductions;
+      const hasCorr=adj.corrected_sales!==null&&adj.corrected_sales!==undefined;
+      window._payrollRows.push({
+        name:m.name,role:'Управляющий',shop:m.shop,shifts:22,
+        oklad:z2.oklad,pct:comm2,bonus:z2.bk1+z2.bk2,
+        advance:+adj.advance||0,pension:+adj.pension||0,fines:+adj.fines||0,
+        total:z2.total,payout:mpayout
+      });
+      mgrHtml+='<tr'+(hasCorr?' style="background:var(--al)"':'')+'>';
+      mgrHtml+='<td><b>'+m.name+'</b>'+(hasCorr?' <span class="tag tw">✎</span>':'')+'</td><td>'+m.shop+'</td>';
+      mgrHtml+='<td>'+fmt(z2.factForTiers)+'</td>';
+      mgrHtml+='<td style="color:'+barCol(z2.pctUsed)+';font-weight:700">'+Math.round(z2.pctUsed*100)+'%</td>';
+      mgrHtml+='<td>22</td>';
+      mgrHtml+='<td>'+fmt(z2.oklad)+'</td>';
+      mgrHtml+='<td>'+fmt(comm2)+'</td>';
+      mgrHtml+='<td>'+fmt(z2.bk1+z2.bk2)+'</td>';
+      mgrHtml+='<td style="color:var(--red)">'+(mdeductions>0?'−'+fmt(mdeductions):'—')+'</td>';
+      mgrHtml+='<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(mpayout)+'</td>';
+      mgrHtml+='<td style="white-space:nowrap">'
+        +'<button class="btn bsm" onclick=\'openAdjust('+JSON.stringify({uid:m.id,name:m.name,mk,realSales:ss2.fact,role:"manager"})+')\'>💵</button>'
+        +'<button class="btn bsm" onclick=\'openSlip('+JSON.stringify({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:22,role:"manager"})+')\'>🖨️</button>'
+        +'</td>';
       mgrHtml+='</tr>';
     });
     mgrHtml+='</table></div></div>';
@@ -824,57 +919,138 @@ window.loadPayroll=async function(forceRefresh){
   document.getElementById('payBody').innerHTML=html;
 }
 
-// Квиток для печати
-window.openSlip=function({name,shop,mk,ts,tc,tu,plan,pct,actualShifts,shopMet}){
-  const zp=calcZPActual(ts,tc,tu,pct,actualShifts,shopMet);
-  const avg=tc>0?ts/tc:0;const upt=tc>0?tu/tc:0;
+// ── Корректировка перед начислением (аванс/пенсия/штрафы/скорр.сумма) ──
+// Квиток для печати и отправки
+window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shopMet,role}){
+  L(true);
+  const adj=await api('getAdjustment',{uid,mk});
+  L(false);
+  const isMgr=role==='manager';
+  const p=isMgr?MGR_PARAMS:PARAMS;
+  const zp=isMgr
+    ? calcMgrZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,p)
+    : calcZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,shopMet,p);
+  const advance=+adj.advance||0,pension=+adj.pension||0,fines=+adj.fines||0;
+  const payout=zp.total-advance-pension-fines;
+  const avg=zp.avg,upt=zp.upt;
   const mkLbl=new Date(mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
+
+  const pctFmt=v=>(parseFloat(v)*100).toFixed(2).replace(/\.00$/,'')+'%';
+  const baseR=pctFmt(p.base),p80R=pctFmt(p.p80),p100R=pctFmt(p.p100),p140R=pctFmt(p.p140);
+  const bKpiVal=fmt(parseFloat(p.bKpi)||(isMgr?20000:10000));
+  const bMagVal=isMgr?null:fmt(parseFloat(p.bMag)||10000);
+  const rateLabel=isMgr?'ставка/смену':'ставка/смену';
+  const oklaLbl='Оклад ('+actualShifts+' смен × '+fmt(parseFloat(p.rate)||(isMgr?30000:6000))+')';
+
+  let rows='';
+  rows+='<tr><td>'+oklaLbl+'</td><td>'+fmt(zp.oklad)+'</td></tr>';
+  rows+='<tr><td>% от продаж ('+baseR+')</td><td>+'+fmt(zp.base)+'</td></tr>';
+  rows+='<tr><td>Доб. % при 80% ('+p80R+')</td><td>+'+fmt(zp.a80)+'</td></tr>';
+  rows+='<tr><td>Доб. % при 100% ('+p100R+')</td><td>+'+fmt(zp.a100)+'</td></tr>';
+  rows+='<tr><td>Доб. % при 140% ('+p140R+')</td><td>+'+fmt(zp.a140)+'</td></tr>';
+  if(!isMgr){
+    rows+='<tr><td>Бонус за план магазина ('+bMagVal+')</td><td>+'+fmt(zp.bMag)+'</td></tr>';
+  }
+  rows+='<tr><td>Бонус KPI — средний чек ('+bKpiVal+')</td><td>+'+fmt(zp.bk1)+'</td></tr>';
+  rows+='<tr><td>Бонус KPI — UPT ('+bKpiVal+')</td><td>+'+fmt(zp.bk2)+'</td></tr>';
+  rows+='<tr style="background:var(--s2)"><td><b>Итого начислено</b></td><td><b>'+fmt(zp.total)+'</b></td></tr>';
+  if(advance>0) rows+='<tr><td>Аванс</td><td style="color:var(--red)">−'+fmt(advance)+'</td></tr>';
+  if(pension>0) rows+='<tr><td>Пенсионные отчисления</td><td style="color:var(--red)">−'+fmt(pension)+'</td></tr>';
+  if(fines>0)   rows+='<tr><td>Штрафы</td><td style="color:var(--red)">−'+fmt(fines)+'</td></tr>';
+  rows+='<tr style="background:var(--gl)"><td><b>ИТОГО К ВЫПЛАТЕ</b></td><td><b style="font-size:16px;color:var(--blue)">'+fmt(payout)+'</b></td></tr>';
+
+  const correctionNote=(adj.corrected_sales!==null&&adj.corrected_sales!==undefined)
+    ? '<div class="alert aw" style="display:block;background:var(--al);color:var(--amber);margin-bottom:10px;font-size:12px">Сумма продаж скорректирована для расчёта: '+fmt(zp.salesForTiers||zp.factForTiers)+' (реальная: '+fmt(ts)+')</div>'
+    : '';
+
+  // Текст для WhatsApp
+  let waText='Расчётный лист — '+name+'\n';
+  waText+='Магазин: '+shop+'\nПериод: '+mkLbl+'\n\n';
+  waText+='Продажи (факт): '+fmt(ts)+'\n';
+  waText+='План: '+(plan?fmt(plan):'—')+'\n';
+  waText+='Выполнение: '+Math.round(zp.pctUsed*100)+'%\n';
+  waText+='Средний чек: '+fmt(avg)+'\nUPT: '+upt.toFixed(2)+'\n\n';
+  waText+='Начислено: '+fmt(zp.total)+'\n';
+  if(advance>0) waText+='Аванс: -'+fmt(advance)+'\n';
+  if(pension>0) waText+='Пенсионные: -'+fmt(pension)+'\n';
+  if(fines>0)   waText+='Штрафы: -'+fmt(fines)+'\n';
+  waText+='\nИТОГО К ВЫПЛАТЕ: '+fmt(payout);
+
   const ov=document.createElement('div');ov.className='ov';
-  ov.innerHTML=`<div class="ovc">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-      <b>Расчётный лист</b>
-      <div style="display:flex;gap:8px">
-        <button class="btn bp bsm" onclick="window.print()">🖨️ Печать</button>
-        <button class="btn bsm" onclick="this.closest('.ov').remove()">✕</button>
-      </div>
-    </div>
-    <div style="border:1px solid var(--border);border-radius:var(--rs);padding:1.25rem">
-      <div style="text-align:center;margin-bottom:1rem">
-        <div style="font-size:20px;font-weight:700">FBSM</div>
-        <div style="font-size:13px;color:var(--muted)">Расчётный лист за ${mkLbl}</div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem;font-size:13px">
-        <div><span style="color:var(--muted)">Сотрудник:</span> <b>${name}</b></div>
-        <div><span style="color:var(--muted)">Магазин:</span> <b>${shop}</b></div>
-        <div><span style="color:var(--muted)">Период:</span> <b>${mkLbl}</b></div>
-        <div><span style="color:var(--muted)">Смен отработано:</span> <b>${actualShifts}</b></div>
-      </div>
-      <table style="margin-bottom:1rem">
-        <tr><th>Показатель</th><th>Значение</th></tr>
-        <tr><td>Продажи (факт)</td><td>${fmt(ts)}</td></tr>
-        <tr><td>План</td><td>${plan?fmt(plan):'—'}</td></tr>
-        <tr><td>Выполнение плана</td><td style="color:${barCol(pct)};font-weight:700">${Math.round(pct*100)}%</td></tr>
-        <tr><td>Средний чек</td><td>${fmt(avg)}</td></tr>
-        <tr><td>UPT</td><td>${upt.toFixed(2)}</td></tr>
-      </table>
-      <table>
-        <tr><th>Составляющая ЗП</th><th>Сумма</th></tr>
-        <tr><td>Оклад (${actualShifts} смен × ${fmt(parseFloat(PARAMS.rate)||6000)})</td><td>${fmt(zp.oklad)}</td></tr>
-        <tr><td>% от личных продаж</td><td>+${fmt(zp.base)}</td></tr>
-        <tr><td>Доб. % при 80%</td><td>+${fmt(zp.a80)}</td></tr>
-        <tr><td>Доб. % при 100%</td><td>+${fmt(zp.a100)}</td></tr>
-        <tr><td>Доб. % при 140%</td><td>+${fmt(zp.a140)}</td></tr>
-        <tr><td>Бонус за выполнение плана</td><td>+${fmt(zp.bMag)}</td></tr>
-        <tr><td>Бонус KPI (средний чек)</td><td>+${fmt(zp.bk1)}</td></tr>
-        <tr><td>Бонус KPI (UPT)</td><td>+${fmt(zp.bk2)}</td></tr>
-        <tr style="background:var(--gl)"><td><b>ИТОГО К ВЫПЛАТЕ</b></td><td><b style="font-size:16px;color:var(--blue)">${fmt(zp.total)}</b></td></tr>
-      </table>
-    </div>
-  </div>`;
+  ov.innerHTML='<div class="ovc">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
+    +'<b>Расчётный лист</b>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn bp bsm" onclick="window.print()">🖨️ Печать</button>'
+    +'<button class="btn bsm" onclick="sendSlipWhatsApp()">📱 WhatsApp</button>'
+    +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button>'
+    +'</div></div>'
+    +'<div style="border:1px solid var(--border);border-radius:var(--rs);padding:1.25rem">'
+    +'<div style="text-align:center;margin-bottom:1rem">'
+    +'<div style="font-size:20px;font-weight:700">FBSM</div>'
+    +'<div style="font-size:13px;color:var(--muted)">Расчётный лист за '+mkLbl+'</div></div>'
+    +correctionNote
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem;font-size:13px">'
+    +'<div><span style="color:var(--muted)">Сотрудник:</span> <b>'+name+'</b></div>'
+    +'<div><span style="color:var(--muted)">Магазин:</span> <b>'+shop+'</b></div>'
+    +'<div><span style="color:var(--muted)">Период:</span> <b>'+mkLbl+'</b></div>'
+    +'<div><span style="color:var(--muted)">Смен отработано:</span> <b>'+actualShifts+'</b></div>'
+    +'</div>'
+    +'<table style="margin-bottom:1rem">'
+    +'<tr><th>Показатель</th><th>Значение</th></tr>'
+    +'<tr><td>Продажи (факт)</td><td>'+fmt(ts)+'</td></tr>'
+    +'<tr><td>План</td><td>'+(plan?fmt(plan):'—')+'</td></tr>'
+    +'<tr><td>Выполнение плана</td><td style="color:'+barCol(zp.pctUsed)+';font-weight:700">'+Math.round(zp.pctUsed*100)+'%</td></tr>'
+    +'<tr><td>Средний чек</td><td>'+fmt(avg)+'</td></tr>'
+    +'<tr><td>UPT</td><td>'+upt.toFixed(2)+'</td></tr>'
+    +'</table>'
+    +'<table><tr><th>Составляющая ЗП</th><th>Сумма</th></tr>'+rows+'</table>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  window._slipWaText=waText;
+}
+
+window.sendSlipWhatsApp=function(){
+  const text=window._slipWaText||'';
+  window.open('https://wa.me/?text='+encodeURIComponent(text),'_blank');
+}
+
+window.openAdjust=async function({uid,name,mk,realSales,role}){
+  L(true);
+  const adj=await api('getAdjustment',{uid,mk});
+  L(false);
+  const ov=document.createElement('div');ov.className='ov';
+  ov.innerHTML='<div class="ovc" style="max-width:460px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
+    +'<b>Корректировка: '+name+'</b>'
+    +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button></div>'
+    +'<div class="alert ai" style="display:block;font-size:12px">Реальная сумма продаж: <b>'+fmt(realSales)+'</b>. '
+    +'Скорректированная сумма влияет только на % и бонусы по плану — KPI (ср.чек/UPT) не меняются.</div>'
+    +'<div class="fg"><label class="fl">Скорректированная сумма продаж (оставь пустым — использовать реальную)</label>'
+    +'<input type="number" id="adj-sales" class="fc" placeholder="'+Math.round(realSales)+'" value="'+(adj.corrected_sales!==null&&adj.corrected_sales!==undefined?adj.corrected_sales:'')+'"></div>'
+    +'<div class="fg"><label class="fl">Аванс (₸)</label><input type="number" id="adj-advance" class="fc" value="'+(adj.advance||0)+'"></div>'
+    +'<div class="fg"><label class="fl">Пенсионные отчисления (₸)</label><input type="number" id="adj-pension" class="fc" value="'+(adj.pension||0)+'"></div>'
+    +'<div class="fg"><label class="fl">Штрафы (₸)</label><input type="number" id="adj-fines" class="fc" value="'+(adj.fines||0)+'"></div>'
+    +'<button class="btn bp" onclick="saveAdjustClick(\''+uid+'\',\''+mk+'\',this)">Сохранить</button>'
+    +'<div id="adj-msg" style="margin-top:8px;font-size:13px"></div>'
+    +'</div>';
   document.body.appendChild(ov);
 }
 
-// Редактирование данных продавца
+window.saveAdjustClick=async function(uid,mk,btn){
+  const cs=document.getElementById('adj-sales').value;
+  const advance=parseFloat(document.getElementById('adj-advance').value)||0;
+  const pension=parseFloat(document.getElementById('adj-pension').value)||0;
+  const fines=parseFloat(document.getElementById('adj-fines').value)||0;
+  L(true);
+  await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
+  L(false);
+  const msg=btn.parentElement.querySelector('#adj-msg');
+  msg.textContent='✓ Сохранено';msg.style.color='var(--green)';
+  setTimeout(()=>{btn.closest('.ov').remove();loadPayroll();},500);
+}
+
+// Редактирование данных продавца по дням
 window.openEdit=function({uid,name,mk,ents}){
   const sorted=[...ents].sort((a,b)=>normDate(a.date).localeCompare(normDate(b.date)));
   const ov=document.createElement('div');ov.className='ov';
@@ -924,6 +1100,7 @@ window.admSaveAll=async function(uid,btn){
   setTimeout(()=>loadPayroll(),400);
 }
 
+
 // ══ СОТРУДНИКИ ══
 window.pgSellers=async function(){
   nav('pgSellers');setTitle('Сотрудники');setBadge('');
@@ -939,7 +1116,7 @@ window.pgSellers=async function(){
         <div class="fg"><label class="fl">Роль</label>
           <select id="nr" class="fc">
             <option value="seller">Продавец</option>
-            ${CU.role==='admin'?'<option value="manager">Управляющий</option><option value="admin">Гл. Администратор</option>':''}
+            ${CU.role==='admin'?'<option value="manager">Управляющий</option><option value="accountant">Бухгалтер</option><option value="admin">Гл. Администратор</option>':''}
           </select>
         </div>
       </div>
@@ -958,7 +1135,7 @@ window.pgSellers=async function(){
 function renderSellers(){
   let users=CU.role==='admin'?USERS:USERS.filter(u=>u.shop===CU.shop);
   users=[...users].sort((a,b)=>a.name.localeCompare(b.name));
-  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец'};
+  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
   document.getElementById('slist').innerHTML=`<div class="tw-wrap"><table>
     <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th></th></tr>
     ${users.map(u=>{
@@ -992,7 +1169,7 @@ window.openEditUser=function(id){
       <div class="fg"><label class="fl">Роль</label>
         <select id="eu-role" class="fc">
           <option value="seller" ${u.role==='seller'?'selected':''}>Продавец</option>
-          ${CU.role==='admin'?`<option value="manager" ${u.role==='manager'?'selected':''}>Управляющий</option><option value="admin" ${u.role==='admin'?'selected':''}>Гл. Администратор</option>`:''}
+          ${CU.role==='admin'?`<option value="manager" ${u.role==='manager'?'selected':''}>Управляющий</option><option value="accountant" ${u.role==='accountant'?'selected':''}>Бухгалтер</option><option value="admin" ${u.role==='admin'?'selected':''}>Гл. Администратор</option>`:''}
         </select>
       </div>
     </div>
@@ -1412,6 +1589,45 @@ window.saveMgrParamsFn=async function(){
   setTimeout(function(){m.textContent='';},3000);
 };
 
+
+// ── Экспорт всех начислений в Excel (с формулами) ──
+window.exportPayrollExcel=function(){
+  const rows=window._payrollRows||[];
+  if(rows.length===0){alert('Нет данных для экспорта. Сначала открой начисление ЗП.');return;}
+
+  const mk=document.getElementById('payMk')?document.getElementById('payMk').value:curMk();
+  const headers=['Имя','Роль','Магазин','Смен','Оклад','% от продаж','Бонусы','Итого начислено','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ'];
+
+  const aoa=[headers];
+  rows.forEach(r=>{
+    aoa.push([r.name,r.role,r.shop,r.shifts,r.oklad,r.pct,r.bonus,null,r.advance,r.pension,r.fines,null]);
+  });
+
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+
+  // Формулы: H (Итого начислено) = E+F+G ; L (К выплате) = H-I-J-K
+  for(let i=0;i<rows.length;i++){
+    const row=i+2; // строка в Excel (1=заголовок)
+    ws['H'+row]={t:'n',f:'E'+row+'+F'+row+'+G'+row};
+    ws['L'+row]={t:'n',f:'H'+row+'-I'+row+'-J'+row+'-K'+row};
+  }
+  // Итоговая строка
+  const totalRow=rows.length+2;
+  ws['A'+totalRow]={t:'s',v:'ИТОГО'};
+  ['E','F','G','H','I','J','K','L'].forEach(col=>{
+    ws[col+totalRow]={t:'n',f:col+'2:'+col+(totalRow-1)};
+    ws[col+totalRow].f='SUM('+col+'2:'+col+(totalRow-1)+')';
+  });
+
+  // Ширина колонок
+  ws['!cols']=[{wch:24},{wch:12},{wch:16},{wch:8},{wch:12},{wch:12},{wch:12},{wch:14},{wch:12},{wch:12},{wch:12},{wch:14}];
+  // Обновляем диапазон листа чтобы включить итоговую строку
+  ws['!ref']='A1:L'+totalRow;
+
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Начисления');
+  XLSX.writeFile(wb,'FBSM_Начисления_'+mk+'.xlsx');
+}
 init();
 </script>
 </body>
