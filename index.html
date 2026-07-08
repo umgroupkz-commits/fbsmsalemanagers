@@ -289,7 +289,8 @@ window.doLogin=async function(){
   document.getElementById('sb-name').textContent=CU.name;
   document.getElementById('sb-shop').textContent=CU.shop||'Администратор';
   L(true);
-  [_sales,_plans,PARAMS]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams')]);
+  [_plans,PARAMS]=await Promise.all([api('getPlans',{}),api('getParams')]);
+  _sales=[]; // подгружается отдельно на каждой странице, отфильтровано по месяцу
   L(false);
   setupSidebar();showScreen('app');
 }
@@ -324,10 +325,8 @@ window.pgDash=async function(){
   setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
   L(true);
   const mk=curMk();
-  [_sales,_plans,PARAMS,window._shopStats]=await Promise.all([
-    api('getSales',{uid:CU.id}),api('getPlans',{}),api('getParams'),
-    api('getShopStats',{mk})
-  ]);
+  const bundle=await api('getBundle',{uid:CU.id,mk,needShopStats:1});
+  _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   L(false);
   const plan=getPlan(CU.id,mk);
   const entries=getEntriesFor(CU.id,mk);
@@ -597,7 +596,8 @@ window.loadRating=async function(){
   const rsort=document.getElementById('rsort');
   const sortBy=rsort?rsort.value:'sales';
   L(true);
-  [_sales,_plans]=await Promise.all([api('getSales',{}),api('getPlans',{})]);
+  const bundle=await api('getBundle',{mk});
+  _sales=bundle.sales;_plans=bundle.plans;
   L(false);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
@@ -643,7 +643,8 @@ window.pgReport=async function(){
 window.loadReport=async function(){
   const mk=document.getElementById('repMk').value;
   L(true);
-  [_sales,_plans,PARAMS,window._shopStats]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams'),api('getShopStats',{mk})]);
+  const bundle=await api('getBundle',{mk,needShopStats:1});
+  _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   L(false);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
@@ -719,7 +720,8 @@ window.pgPayroll=async function(){
 window.loadPayroll=async function(){
   const mk=document.getElementById('payMk').value;
   L(true);
-  [_sales,_plans,PARAMS,window._shopStats]=await Promise.all([api('getSales',{}),api('getPlans',{}),api('getParams'),api('getShopStats',{mk})]);
+  const bundle=await api('getBundle',{mk,needShopStats:1});
+  _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   L(false);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
@@ -1236,9 +1238,9 @@ window.pgMgrDash=async function(){
   setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
   L(true);
   var mk=curMk();
-  var results=await Promise.all([api('getShopStats',{mk:mk}),api('getPlans',{}),api('getMgrParams',{})]);
-  window._shopStats=results[0];_plans=results[1];
-  MGR_PARAMS=Object.assign({},MGR_DEFAULTS,results[2]);
+  var bundle=await api('getBundle',{mk:mk,needShopStats:1,needMgrParams:1});
+  window._shopStats=bundle.shopStats;_plans=bundle.plans;
+  MGR_PARAMS=Object.assign({},MGR_DEFAULTS,bundle.mgrParams);
   L(false);
 
   var ss=(window._shopStats||{})[CU.shop]||{fact:0,consultants:0,other:0,plan:0,pct:0};
