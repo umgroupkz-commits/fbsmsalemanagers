@@ -1128,8 +1128,41 @@ window.pgSellers=async function(){
       <div class="ct">Список сотрудников</div>
       <div id="slist"></div>
     </div>
-  </div>`);
+  </div>
+  ${CU.role==='admin'?'<div class="card"><div class="ct">🗑️ Удалённые сотрудники (можно восстановить)</div><div id="dlist"><div class="spin" style="margin:1rem auto;display:block"></div></div></div>':''}`);
   renderSellers();
+  if(CU.role==='admin') renderDeletedUsers();
+}
+
+window.renderDeletedUsers=async function(){
+  const el=document.getElementById('dlist');
+  if(!el) return;
+  const deleted=await api('getDeletedUsers',{});
+  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+  if(deleted.length===0){
+    el.innerHTML='<div style="color:var(--muted);font-size:13px">Нет удалённых сотрудников</div>';
+    return;
+  }
+  el.innerHTML=`<div class="tw-wrap"><table>
+    <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th>Удалён</th><th></th></tr>
+    ${deleted.map(u=>`<tr>
+      <td>${u.name}</td><td>${u.shop||'—'}</td><td>${rm[u.role]||u.role}</td>
+      <td style="font-size:12px;color:var(--muted)">${u.deleted_at?new Date(u.deleted_at).toLocaleDateString('ru-RU'):'—'}</td>
+      <td><button class="btn bsm bp" onclick="restoreUserClick('${u.id}')">♻️ Восстановить</button></td>
+    </tr>`).join('')}
+  </table></div>`;
+}
+
+window.restoreUserClick=async function(id){
+  L(true);
+  await apiPost('restoreUser',{id});
+  USERS=await api('getUsers');
+  const sel=document.getElementById('lname');
+  if(sel){sel.innerHTML='<option value="">— выберите —</option>';
+    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${u.name}</option>`});}
+  L(false);
+  renderSellers();
+  renderDeletedUsers();
 }
 
 function renderSellers(){
