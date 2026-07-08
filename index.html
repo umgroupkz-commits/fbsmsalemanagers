@@ -180,6 +180,13 @@ async function apiPost(action,data={},attempt=1){
 // ══ UTILS ══
 const fmt=n=>Math.round(n||0).toLocaleString('ru-RU')+'₸';
 const fmtN=n=>Math.round(n||0).toLocaleString('ru-RU');
+function fmtUpdatedAt(iso){
+  if(!iso) return 'Данные ещё не загружались — нажми «Обновить данные»';
+  try{
+    const d=new Date(iso);
+    return 'Данные обновлены: '+d.toLocaleDateString('ru-RU')+' '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+  }catch(e){return '';}
+}
 function today(){return new Date().toISOString().slice(0,10)}
 function curMk(){
   const n=new Date();
@@ -656,18 +663,22 @@ window.loadRating=async function(){
 
 window.pgReport=async function(){
   nav('pgReport');setTitle('Сводка по продавцам');setBadge('');
-  setContent(`<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+  setContent(`<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
     <select id="repMk" class="fc" style="width:auto" onchange="loadReport()">${monthsOpts(6)}</select>
+    <button class="btn bsm" onclick="loadReport(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>
+    <span id="repUpdatedAt" style="font-size:12px;color:var(--muted)"></span>
   </div><div id="repBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
   await loadReport();
 }
 
-window.loadReport=async function(){
+window.loadReport=async function(forceRefresh){
   const mk=document.getElementById('repMk').value;
   L(true);
-  const bundle=await api('getBundle',{mk,needShopStats:1});
+  const bundle=await api('getBundle',{mk,needShopStats:1,forceRefresh:forceRefresh?1:0});
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   L(false);
+  const uaEl=document.getElementById('repUpdatedAt');
+  if(uaEl) uaEl.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
   const byShop={};
@@ -734,17 +745,21 @@ window.pgPayroll=async function(){
   nav('pgPayroll');setTitle('Начисление зарплат');setBadge('');
   setContent(`<div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
     <select id="payMk" class="fc" style="width:auto" onchange="loadPayroll()">${monthsOpts(6)}</select>
+    <button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>
+    <span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>
     <span style="font-size:13px;color:var(--muted)">Нажми ✏️ для корректировки данных или 🖨️ для квитка</span>
   </div><div id="payBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
   await loadPayroll();
 }
 
-window.loadPayroll=async function(){
+window.loadPayroll=async function(forceRefresh){
   const mk=document.getElementById('payMk').value;
   L(true);
-  const bundle=await api('getBundle',{mk,needShopStats:1});
+  const bundle=await api('getBundle',{mk,needShopStats:1,forceRefresh:forceRefresh?1:0});
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   L(false);
+  const uaEl2=document.getElementById('payUpdatedAt');
+  if(uaEl2) uaEl2.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
   let sellers=USERS.filter(u=>u.role==='seller');
   if(CU.role==='manager')sellers=sellers.filter(u=>u.shop===CU.shop);
   const managers=CU.role==='admin'?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
@@ -1255,13 +1270,14 @@ function calcMgrZP(fact,checks,units,pct,shifts,p){
          total:oklad+base+a80+a100+a140+bk1+bk2,avg:avg,upt:upt};
 }
 
-window.pgMgrDash=async function(){
+window.pgMgrDash=async function(forceRefresh){
   nav('pgMgrDash');setTitle('Моя зарплата');setBadge('');
   setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
   L(true);
   var mk=curMk();
-  var bundle=await api('getBundle',{mk:mk,needShopStats:1,needMgrParams:1});
+  var bundle=await api('getBundle',{mk:mk,needShopStats:1,needMgrParams:1,forceRefresh:forceRefresh?1:0});
   window._shopStats=bundle.shopStats;_plans=bundle.plans;
+  window._mgrUpdatedAt=bundle.shopStatsUpdatedAt;
   MGR_PARAMS=Object.assign({},MGR_DEFAULTS,bundle.mgrParams);
   L(false);
 
@@ -1360,6 +1376,10 @@ window.pgMgrDash=async function(){
   html+='<button class="btn bp bsm" onclick="calcMgrScen()">Рассчитать</button></div>';
   html+='<div id="mgr-scen-result" style="font-size:14px;font-weight:600;color:var(--blue)"></div>';
   html+='</div></div>';
+  html+='<div style="display:flex;align-items:center;gap:10px;margin-top:1rem">';
+  html+='<button class="btn bsm" onclick="pgMgrDash(true)" title="Обновить факт магазина из отчётов">🔄 Обновить данные</button>';
+  html+='<span style="font-size:12px;color:var(--muted)">'+fmtUpdatedAt(window._mgrUpdatedAt)+'</span>';
+  html+='</div>';
   setContent(html);
   window._mgrDash={shopFact:shopFact,shopPlan:shopPlan,pct:pct,tc:tc,tu:tu,normShifts:normShifts};
 };
