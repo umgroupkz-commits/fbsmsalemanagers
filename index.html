@@ -394,11 +394,12 @@ function setupSidebar(){
       {ic:'📋',l:'История',fn:'pgHist'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'}]
     :CU.role==='manager'
     ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💹',l:'Моя ЗП',fn:'pgMgrDash'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
-      {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
+      {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'📖',l:'История продавцов',fn:'pgSellerHist'},
+      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
     :CU.role==='accountant'
     ?[{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'}]
     :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
-      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
+      {ic:'📖',l:'История продавцов',fn:'pgSellerHist'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
       {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
     `<button class="ni" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:20px">${i.ic}</span>${i.l}</button>`
@@ -662,6 +663,61 @@ window.delEntry=async function(date){
   await loadHist();
 }
 
+// ══ ИСТОРИЯ ПРОДАВЦОВ (для управляющего — свой магазин, для админа — все) ══
+window.pgSellerHist=async function(){
+  nav('pgSellerHist');setTitle('История продавцов');setBadge('');
+  const sellers=getVisibleSellers();
+  if(sellers.length===0){
+    setContent('<div class="card"><div style="color:var(--muted);font-size:13px">Нет доступных продавцов</div></div>');
+    return;
+  }
+  setContent(`<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px">
+      <div class="ct" style="margin:0">История продавца</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="sh-uid" class="fc" style="width:auto" onchange="loadSellerHist()">
+          ${sellers.map(u=>`<option value="${u.id}">${u.name} (${u.shop})</option>`).join('')}
+        </select>
+        <select id="sh-mk" class="fc" style="width:auto" onchange="loadSellerHist()">${monthsOpts(6)}</select>
+      </div>
+    </div>
+    <div id="shbody"><div class="spin" style="margin:1rem auto;display:block"></div></div>
+  </div>`);
+  await loadSellerHist();
+}
+
+window.loadSellerHist=async function(){
+  const uid=document.getElementById('sh-uid').value;
+  const mk=document.getElementById('sh-mk').value;
+  L(true);
+  const bundle=await api('getBundle',{uid,mk});
+  _sales=bundle.sales;_plans=bundle.plans;
+  L(false);
+  const entries=getEntriesFor(uid,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
+  const plan=getPlan(uid,mk);
+  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
+  ts=Math.max(0,ts-tr);
+  const pct=plan>0?ts/plan:0;
+  let html='';
+  if(!entries.length){
+    html='<div style="color:var(--muted);font-size:13px;padding:1rem 0">Нет записей за этот период</div>';
+  }else{
+    html=`<div class="tw-wrap"><table>
+      <tr><th>Дата</th><th>Продажи</th><th>Возврат</th><th>Факт</th><th>Чеков</th><th>Единиц</th><th>Ср.чек</th></tr>
+      ${entries.map(e=>`<tr>
+        <td>${e.date}</td><td>${fmt(+e.sales)}</td><td style="color:var(--red)">${+(e.returns||0)>0?"−"+fmt(+(e.returns||0)):"—"}</td><td><b>${fmt(Math.max(0,+e.sales-+(e.returns||0)))}</b></td><td>${fmtN(+e.checks)}</td><td>${fmtN(+e.units)}</td>
+        <td>${+e.checks>0?fmt(+e.sales/+e.checks):'—'}</td>
+      </tr>`).join('')}
+    </table></div>
+    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);display:flex;gap:2rem;font-size:13px;flex-wrap:wrap">
+      <span>Итого: <b>${fmt(ts)}</b></span><span>Чеков: <b>${fmtN(tc)}</b></span>
+      <span>Единиц: <b>${fmtN(tu)}</b></span>
+      <span>Выполнение: <b style="color:${barCol(pct)}">${Math.round(pct*100)}%</b></span>
+    </div>`;
+  }
+  document.getElementById('shbody').innerHTML=html;
+}
+
 // ══ РЕЙТИНГ (вся сеть) ══
 window.pgRating=async function(){
   nav('pgRating');setTitle('Рейтинг продавцов');setBadge('');
@@ -690,7 +746,9 @@ window.loadRating=async function(){
   const bundle=await api('getBundle',{mk});
   _sales=bundle.sales;_plans=bundle.plans;
   L(false);
-  const sellers=getVisibleSellers();
+  // Рейтинг — всегда по всей сети, независимо от роли (в отличие от
+  // Сводки/Начисления, где управляющий видит только свой магазин).
+  const sellers=USERS.filter(u=>u.role==='seller');
   const rows=sellers.map(u=>{
     const entries=getEntriesFor(u.id,mk);
     let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
