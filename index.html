@@ -1869,134 +1869,150 @@ window.exportPayrollExcel=function(){
   const sellers=all.filter(r=>r.kind!=='manager');
   const mgrs=all.filter(r=>r.kind==='manager');
   const wb=XLSX.utils.book_new();
+  const R0=5; // первая строка данных на листах расчёта
 
-  // ══ ЛИСТ 1: СВОД ══════════════════════════════════════════════
-  const sv=[['СВОД НАЧИСЛЕНИЙ · '+mk],[],
-    ['Сотрудник','Роль','Магазин','Смен','Оклад','% от продаж','Бонусы','НАЧИСЛЕНО','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ']];
-  all.forEach(r=>sv.push([r.name,r.role,r.shop,r.shifts,r.oklad,r.pct,r.bonus,null,r.advance,r.pension,r.fines,null]));
-  const wsSv=XLSX.utils.aoa_to_sheet(sv);
-  all.forEach((r,i)=>{
-    const n=i+4;
-    xlF(wsSv,'H'+n,`E${n}+F${n}+G${n}`);
-    xlF(wsSv,'L'+n,`H${n}-I${n}-J${n}-K${n}`);
-    ['E','F','G','I','J','K'].forEach(c=>xlZ(wsSv,c+n,XL_MONEY));
-  });
-  const tr=all.length+4;
-  wsSv['A'+tr]={t:'s',v:'ИТОГО'};
-  ['D','E','F','G','H','I','J','K','L'].forEach(c=>
-    xlF(wsSv,c+tr,`SUM(${c}4:${c}${tr-1})`,c==='D'?'0.0':XL_MONEY));
-  wsSv['!ref']='A1:L'+tr;
-  wsSv['!cols']=[{wch:26},{wch:14},{wch:15},{wch:8},{wch:13},{wch:14},{wch:13},{wch:14},{wch:12},{wch:12},{wch:12},{wch:15}];
-  wsSv['!merges']=[{s:{r:0,c:0},e:{r:0,c:11}}];
-  XLSX.utils.book_append_sheet(wb,wsSv,'Свод');
+  // ══ ЛИСТЫ РАСЧЁТА ═════════════════════════════════════════════
+  // Каждая денежная ячейка — формула от исходных данных и ставок,
+  // которые лежат в той же строке слева. Зашитых сумм нет ни одной:
+  // бухгалтер меняет ставку — пересчитывается вся строка.
+  const KEYS=['name','shop','realSales','sales','plan','pct','shifts','rate','oklad',
+    'kBase','vBase','k80','v80','k100','v100','k140','v140','commTotal',
+    'checks','units','avg','avgNorm','kpiRate','vKpi1','upt','uptNorm','vKpi2'];
+  const KEYS_SHOP=['shopMet','bMagRate','vMag'];
+  const KEYS_TAIL=['bonusTotal','accrued','advance','pension','fines','payout'];
+  const FORMULA_KEYS=['pct','oklad','vBase','v80','v100','v140','commTotal',
+    'avg','vKpi1','upt','vKpi2','vMag','bonusTotal','accrued','payout'];
+  const HEAD={
+    name:'Сотрудник',shop:'Магазин',
+    realSales:'Продажи реальные',sales:'Продажи для расчёта',plan:'План',pct:'% выполнения',
+    shifts:'Смен',rate:'Ставка за смену',oklad:'ОКЛАД',
+    kBase:'База, ставка',vBase:'База, ₸',
+    k80:'Порог 80%, ставка',v80:'Доплата 80%, ₸',
+    k100:'Порог 100%, ставка',v100:'Доплата 100%, ₸',
+    k140:'Порог 140%, ставка',v140:'Доплата 140%, ₸',
+    commTotal:'ИТОГО % ОТ ПРОДАЖ',
+    checks:'Чеков',units:'Единиц',
+    avg:'Средний чек',avgNorm:'Норма ср. чека',kpiRate:'Ставка премии KPI',vKpi1:'ПРЕМИЯ за ср. чек',
+    upt:'UPT',uptNorm:'Норма UPT',vKpi2:'ПРЕМИЯ за UPT',
+    shopMet:'План магазина',bMagRate:'Ставка премии за магазин',vMag:'ПРЕМИЯ за план магазина',
+    bonusTotal:'ИТОГО ПРЕМИИ',accrued:'НАЧИСЛЕНО',
+    advance:'Аванс',pension:'Пенсия',fines:'Штрафы',payout:'К ВЫПЛАТЕ'};
 
-  // ══ ЛИСТ 2/3: ПОДРОБНЫЙ РАСЧЁТ ════════════════════════════════
-  // isMgr — у управляющего нет бонуса за план магазина
-  const detail=(rows,name,isMgr)=>{
-    if(!rows.length)return;
-    const H=['Сотрудник','Магазин',
-      'Продажи реальные','Продажи для расчёта','План','% выполнения',
-      'Смен','Ставка за смену','ОКЛАД',
-      'База, ставка','База, ₸',
-      'Порог 80%, ставка','Бонус 80%, ₸',
-      'Порог 100%, ставка','Бонус 100%, ₸',
-      'Порог 140%, ставка','Бонус 140%, ₸',
-      'ИТОГО % ОТ ПРОДАЖ',
-      'Чеков','Единиц',
-      'Средний чек','Норма ср. чека','Бонус за ср. чек',
-      'UPT','Норма UPT','Бонус за UPT'];
-    if(!isMgr)H.push('План магазина','Бонус за план магазина');
-    H.push('ИТОГО БОНУСЫ','НАЧИСЛЕНО','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ');
+  const detail=(rows,sheet,isMgr)=>{
+    if(!rows.length)return null;
+    const keys=KEYS.concat(isMgr?[]:KEYS_SHOP).concat(KEYS_TAIL);
+    const C={};keys.forEach((k,i)=>C[k]=xlCol(i));
     const aoa=[[(isMgr?'РАСЧЁТ ЗП · УПРАВЛЯЮЩИЕ · ':'РАСЧЁТ ЗП · ПРОДАВЦЫ · ')+mk],
-      ['Все суммы — формулы. Меняешь исходные данные слева — пересчитывается всё справа.'],[],H];
-    rows.forEach(r=>{
-      const line=[r.name,r.shop,
-        r.realSales,r.sales,r.plan,null,
-        r.shifts,r.rate,null,
-        r.kBase,null,
-        r.k80,null,
-        r.k100,null,
-        r.k140,null,
-        null,
-        r.checks,r.units,
-        null,r.avgNorm,null,
-        null,r.uptNorm,null];
-      if(!isMgr)line.push(r.shopMet?'выполнен':'не выполнен',null);
-      line.push(null,null,r.advance,r.pension,r.fines,null);
-      aoa.push(line);
-    });
+      ['Каждая сумма — формула. Меняешь исходные данные или ставку слева — пересчитывается вся строка.'],[],
+      keys.map(k=>HEAD[k])];
+    rows.forEach(r=>aoa.push(keys.map(k=>{
+      if(FORMULA_KEYS.includes(k))return null;   // заполнится формулой ниже
+      if(k==='shopMet')return r.shopMet?'да':'нет';
+      if(k==='kpiRate')return r.bKpiRate;
+      return r[k]!==undefined?r[k]:null;
+    })));
     const ws=XLSX.utils.aoa_to_sheet(aoa);
-    // индексы колонок (0-based) → буквы
-    const C={},names=['name','shop','realSales','sales','plan','pct','shifts','rate','oklad',
-      'kBase','vBase','k80','v80','k100','v100','k140','v140','commTotal','checks','units',
-      'avg','avgNorm','vKpi1','upt','uptNorm','vKpi2'];
-    if(!isMgr)names.push('shopMet','vMag');
-    names.push('bonusTotal','accrued','advance','pension','fines','payout');
-    names.forEach((k,i)=>C[k]=xlCol(i));
     rows.forEach((r,i)=>{
-      const n=i+5;
-      const a=k=>C[k]+n;
-      xlF(ws,a('pct'),      `IF(${a('plan')}>0,${a('sales')}/${a('plan')},0)`,XL_PCT);
-      xlF(ws,a('oklad'),    `${a('shifts')}*${a('rate')}`);
-      xlF(ws,a('vBase'),    `${a('sales')}*${a('kBase')}`);
-      xlF(ws,a('v80'),      `IF(${a('pct')}>=0.8,${a('sales')}*${a('k80')},0)`);
-      xlF(ws,a('v100'),     `IF(${a('pct')}>=1,${a('sales')}*${a('k100')},0)`);
-      xlF(ws,a('v140'),     `IF(${a('pct')}>=1.4,${a('sales')}*${a('k140')},0)`);
-      xlF(ws,a('commTotal'),`${a('vBase')}+${a('v80')}+${a('v100')}+${a('v140')}`);
+      const n=i+R0,a=k=>C[k]+n;
+      xlF(ws,a('pct'),      'IF('+a('plan')+'>0,'+a('sales')+'/'+a('plan')+',0)',XL_PCT);
+      xlF(ws,a('oklad'),    a('shifts')+'*'+a('rate'));
+      xlF(ws,a('vBase'),    a('sales')+'*'+a('kBase'));
+      xlF(ws,a('v80'),      'IF('+a('pct')+'>=0.8,'+a('sales')+'*'+a('k80')+',0)');
+      xlF(ws,a('v100'),     'IF('+a('pct')+'>=1,'+a('sales')+'*'+a('k100')+',0)');
+      xlF(ws,a('v140'),     'IF('+a('pct')+'>=1.4,'+a('sales')+'*'+a('k140')+',0)');
+      xlF(ws,a('commTotal'),a('vBase')+'+'+a('v80')+'+'+a('v100')+'+'+a('v140'));
       // KPI считаются от РЕАЛЬНЫХ продаж — корректировка на них не влияет
-      xlF(ws,a('avg'),      `IF(${a('checks')}>0,${a('realSales')}/${a('checks')},0)`);
-      xlF(ws,a('vKpi1'),    `IF(${a('avg')}>=${a('avgNorm')},${r.bKpiRate},0)`);
-      xlF(ws,a('upt'),      `IF(${a('checks')}>0,${a('units')}/${a('checks')},0)`,'0.00');
-      xlF(ws,a('vKpi2'),    `IF(${a('upt')}>=${a('uptNorm')},${r.bKpiRate},0)`);
-      if(!isMgr){
-        ws[a('vMag')]={t:'n',v:r.vMag||0,z:XL_MONEY};
-        xlF(ws,a('bonusTotal'),`${a('vMag')}+${a('vKpi1')}+${a('vKpi2')}`);
+      xlF(ws,a('avg'),      'IF('+a('checks')+'>0,'+a('realSales')+'/'+a('checks')+',0)');
+      xlF(ws,a('vKpi1'),    'IF('+a('avg')+'>='+a('avgNorm')+','+a('kpiRate')+',0)');
+      xlF(ws,a('upt'),      'IF('+a('checks')+'>0,'+a('units')+'/'+a('checks')+',0)','0.00');
+      xlF(ws,a('vKpi2'),    'IF('+a('upt')+'>='+a('uptNorm')+','+a('kpiRate')+',0)');
+      if(isMgr){
+        xlF(ws,a('bonusTotal'),a('vKpi1')+'+'+a('vKpi2'));
       }else{
-        xlF(ws,a('bonusTotal'),`${a('vKpi1')}+${a('vKpi2')}`);
+        xlF(ws,a('vMag'),      'IF('+a('shopMet')+'="да",'+a('bMagRate')+',0)');
+        xlF(ws,a('bonusTotal'),a('vKpi1')+'+'+a('vKpi2')+'+'+a('vMag'));
       }
-      xlF(ws,a('accrued'),  `${a('oklad')}+${a('commTotal')}+${a('bonusTotal')}`);
-      xlF(ws,a('payout'),   `${a('accrued')}-${a('advance')}-${a('pension')}-${a('fines')}`);
-      ['realSales','sales','plan','rate','avg','avgNorm','advance','pension','fines']
-        .forEach(k=>xlZ(ws,a(k),XL_MONEY));
+      xlF(ws,a('accrued'),  a('oklad')+'+'+a('commTotal')+'+'+a('bonusTotal'));
+      xlF(ws,a('payout'),   a('accrued')+'-'+a('advance')+'-'+a('pension')+'-'+a('fines'));
+      ['realSales','sales','plan','rate','avgNorm','kpiRate','advance','pension','fines']
+        .concat(isMgr?[]:['bMagRate']).forEach(k=>xlZ(ws,a(k),XL_MONEY));
       ['kBase','k80','k100','k140'].forEach(k=>xlZ(ws,a(k),XL_RATE));
     });
-    // строка итогов
-    const t=rows.length+5;
+    const t=rows.length+R0;
     ws[C.name+t]={t:'s',v:'ИТОГО'};
     ['realSales','sales','plan','oklad','vBase','v80','v100','v140','commTotal',
       'vKpi1','vKpi2','bonusTotal','accrued','advance','pension','fines','payout']
       .concat(isMgr?[]:['vMag'])
-      .forEach(k=>xlF(ws,C[k]+t,`SUM(${C[k]}5:${C[k]}${t-1})`));
-    xlF(ws,C.shifts+t,`SUM(${C.shifts}5:${C.shifts}${t-1})`,'0.0');
+      .forEach(k=>xlF(ws,C[k]+t,'SUM('+C[k]+R0+':'+C[k]+(t-1)+')'));
+    xlF(ws,C.shifts+t,'SUM('+C.shifts+R0+':'+C.shifts+(t-1)+')','0.0');
     ws['!ref']='A1:'+C.payout+t;
-    ws['!cols']=H.map((h,i)=>({wch:i<2?24:Math.max(11,Math.min(20,h.length+3))}));
-    ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:H.length-1}},{s:{r:1,c:0},e:{r:1,c:H.length-1}}];
-    XLSX.utils.book_append_sheet(wb,ws,name);
+    ws['!cols']=keys.map((k,i)=>({wch:i<2?24:Math.max(12,Math.min(22,HEAD[k].length+3))}));
+    ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:keys.length-1}},{s:{r:1,c:0},e:{r:1,c:keys.length-1}}];
+    ws['!freeze']={xSplit:'2',ySplit:'4'};
+    XLSX.utils.book_append_sheet(wb,ws,sheet);
+    return C;
   };
-  detail(sellers,'Продавцы — расчёт',false);
-  detail(mgrs,'Управляющие — расчёт',true);
+  const Cs=detail(sellers,'Продавцы',false);
+  const Cm=detail(mgrs,'Управляющие',true);
 
-  // ══ ЛИСТ 4: ПАРАМЕТРЫ ═════════════════════════════════════════
+  // ══ СВОД — все числа ссылаются на листы расчёта ════════════════
+  const ordered=sellers.concat(mgrs);
+  const sv=[['СВОД НАЧИСЛЕНИЙ · '+mk],
+    ['Каждое число — ссылка на лист расчёта. Правится там, здесь пересчитывается само.'],[],
+    ['Сотрудник','Роль','Магазин','Смен','Оклад','% от продаж','ПРЕМИИ','НАЧИСЛЕНО','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ']];
+  ordered.forEach(r=>sv.push([r.name,r.role,r.shop,null,null,null,null,null,null,null,null,null]));
+  const wsSv=XLSX.utils.aoa_to_sheet(sv);
+  ordered.forEach((r,i)=>{
+    const n=i+R0,isM=r.kind==='manager';
+    const C=isM?Cm:Cs;
+    if(!C)return;
+    const src="'"+(isM?'Управляющие':'Продавцы')+"'!";
+    const k=(isM?i-sellers.length:i)+R0;   // строка этого человека на листе расчёта
+    xlF(wsSv,'D'+n,src+C.shifts+k,'0.0');
+    xlF(wsSv,'E'+n,src+C.oklad+k);
+    xlF(wsSv,'F'+n,src+C.commTotal+k);
+    xlF(wsSv,'G'+n,src+C.bonusTotal+k);
+    xlF(wsSv,'H'+n,'E'+n+'+F'+n+'+G'+n);
+    xlF(wsSv,'I'+n,src+C.advance+k);
+    xlF(wsSv,'J'+n,src+C.pension+k);
+    xlF(wsSv,'K'+n,src+C.fines+k);
+    xlF(wsSv,'L'+n,'H'+n+'-I'+n+'-J'+n+'-K'+n);
+  });
+  const tr=ordered.length+R0;
+  wsSv['A'+tr]={t:'s',v:'ИТОГО'};
+  ['D','E','F','G','H','I','J','K','L'].forEach(c=>
+    xlF(wsSv,c+tr,'SUM('+c+R0+':'+c+(tr-1)+')',c==='D'?'0.0':XL_MONEY));
+  wsSv['!ref']='A1:L'+tr;
+  wsSv['!cols']=[{wch:26},{wch:14},{wch:15},{wch:8},{wch:13},{wch:14},{wch:13},{wch:14},{wch:12},{wch:12},{wch:12},{wch:15}];
+  wsSv['!merges']=[{s:{r:0,c:0},e:{r:0,c:11}},{s:{r:1,c:0},e:{r:1,c:11}}];
+  XLSX.utils.book_append_sheet(wb,wsSv,'Свод');
+
+  // ══ ПАРАМЕТРЫ ═════════════════════════════════════════════════
   const s0=sellers[0]||{},m0=mgrs[0]||{};
   const pr=[['ПАРАМЕТРЫ РАСЧЁТА · '+mk],[],
     ['Показатель','Продавец','Управляющий'],
-    ['Ставка за смену',s0.rate??'—',m0.rate??'—'],
-    ['Базовый % от продаж',s0.kBase??'—',m0.kBase??'—'],
-    ['Доплата при 80% плана',s0.k80??'—',m0.k80??'—'],
-    ['Доплата при 100% плана',s0.k100??'—',m0.k100??'—'],
-    ['Доплата при 140% плана',s0.k140??'—',m0.k140??'—'],
-    ['Бонус за план магазина',s0.bMagRate??'—','нет'],
-    ['Бонус за KPI (каждый)',s0.bKpiRate??'—',m0.bKpiRate??'—'],
-    ['Норма среднего чека',s0.avgNorm??'—',m0.avgNorm??'—'],
-    ['Норма UPT',s0.uptNorm??'—',m0.uptNorm??'—'],
+    ['Ставка за смену',s0.rate!==undefined?s0.rate:'—',m0.rate!==undefined?m0.rate:'—'],
+    ['Базовый % от продаж',s0.kBase!==undefined?s0.kBase:'—',m0.kBase!==undefined?m0.kBase:'—'],
+    ['Доплата при 80% плана',s0.k80!==undefined?s0.k80:'—',m0.k80!==undefined?m0.k80:'—'],
+    ['Доплата при 100% плана',s0.k100!==undefined?s0.k100:'—',m0.k100!==undefined?m0.k100:'—'],
+    ['Доплата при 140% плана',s0.k140!==undefined?s0.k140:'—',m0.k140!==undefined?m0.k140:'—'],
+    ['Премия за план магазина',s0.bMagRate!==undefined?s0.bMagRate:'—','нет'],
+    ['Премия за KPI (каждая)',s0.bKpiRate!==undefined?s0.bKpiRate:'—',m0.bKpiRate!==undefined?m0.bKpiRate:'—'],
+    ['Норма среднего чека',s0.avgNorm!==undefined?s0.avgNorm:'—',m0.avgNorm!==undefined?m0.avgNorm:'—'],
+    ['Норма UPT',s0.uptNorm!==undefined?s0.uptNorm:'—',m0.uptNorm!==undefined?m0.uptNorm:'—'],
     [],
-    ['Смены продавца берутся из записей о продажах и взвешиваются по типу смены из графика:'],
-    ['полная смена = 1, полсмены = 0.5, стажировка = 1. У управляющего — фиксировано 22.'],
-    ['KPI (средний чек и UPT) считаются от РЕАЛЬНЫХ продаж — корректировка на них не влияет.']];
+    ['Как считаются смены'],
+    ['Смены продавца — дни с записями о продажах (в том числе нулевыми), взвешенные'],
+    ['по типу смены из графика: полная = 1, полсмены = 0,5, стажировка = 1.'],
+    ['У управляющего смены фиксированы: 22.'],
+    [],
+    ['Нюанс корректировки'],
+    ['Если сумма продаж скорректирована вручную, от неё считаются только % и пороги 80/100/140.'],
+    ['Средний чек и UPT всегда считаются от РЕАЛЬНЫХ продаж.']];
   const wsP=XLSX.utils.aoa_to_sheet(pr);
   [4,9,10,11].forEach(n=>{xlZ(wsP,'B'+n,XL_MONEY);xlZ(wsP,'C'+n,XL_MONEY)});
   [5,6,7,8].forEach(n=>{xlZ(wsP,'B'+n,XL_RATE);xlZ(wsP,'C'+n,XL_RATE)});
-  wsP['!cols']=[{wch:34},{wch:16},{wch:16}];
+  wsP['!cols']=[{wch:44},{wch:16},{wch:16}];
   wsP['!merges']=[{s:{r:0,c:0},e:{r:0,c:2}}];
   XLSX.utils.book_append_sheet(wb,wsP,'Параметры');
 
