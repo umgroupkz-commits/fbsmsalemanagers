@@ -672,8 +672,8 @@ window.saveEntry=async function(){
   if(!date){alert('Выберите дату');return}
   // ГРАФИК: не даём вводить продажи, пока график на месяц не заполнен
   L(true);
-  const schSt=await schGuard(CU.id,date);
-  if(schSt==='block'){L(false);schSayBlocked(date);return}
+  const schSt=await schGuard(CU.shop);
+  if(schSt.st==='block'){L(false);schSayGuard(schSt,false);return}
   await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns:parseFloat(document.getElementById('er')?.value)||0});
   // ГРАФИК: помечаем факт смены. Ошибка здесь не должна ломать сохранение продаж.
   schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
@@ -681,10 +681,8 @@ window.saveEntry=async function(){
   L(false);
   const m=document.getElementById('emsg');
   m.style.cssText='';
-  if(schSt==='soft'){
-    // мягкий период: продажи сохранены, но график ещё пуст
-    m.className='alert';m.style.cssText='background:var(--al);color:var(--amber)';
-    m.textContent=`✓ Сохранено за ${date}. График на ${normMk(date)} не заполнен — заполните вкладку «📅 График».`;
+  if(schSt.st==='soft'){
+    schSayGuard(schSt,true,date);   // сохранено, но график впереди дырявый
   }else{
     m.className='alert as';m.textContent=`✓ Сохранено за ${date}`;
   }
@@ -692,7 +690,7 @@ window.saveEntry=async function(){
   document.getElementById('ec').value='';
   document.getElementById('eu').value='';
   document.getElementById('er').value='';
-  setTimeout(()=>{m.textContent='';m.style.cssText=''},schSt==='soft'?6000:3000);
+  setTimeout(()=>{m.textContent='';m.style.cssText=''},schSt.st==='soft'?7000:3000);
 }
 
 // ══ ИСТОРИЯ ══
@@ -2269,12 +2267,19 @@ async function schRender(){
   body.innerHTML=h;
 
   if(box){
+    // Ближайшие дни выделяем отдельно: именно они блокируют ввод продаж
+    const lim=schAddDays(today(),SCH_HORIZON_DAYS);
     const future=uncov.filter(d=>d>=today());
-    box.innerHTML=(own&&future.length)
-      ?'<div class="alert" style="background:var(--al);color:var(--amber)">⚠️ Не закрыты дни на точке «'+own.name+'»: '
-        +future.slice(0,20).map(d=>+d.slice(-2)).join(', ')
-        +(future.length>20?' и ещё '+(future.length-20):'')+'</div>'
-      :'';
+    const soon=future.filter(d=>d<=lim), later=future.filter(d=>d>lim);
+    let h='';
+    if(own&&soon.length)
+      h+='<div class="alert ae">⛔ Не закрыты ближайшие '+SCH_HORIZON_DAYS+' дней на точке «'+own.name+'»: '
+        +schDatesLabel(soon)+'. Пока не закроете — продавцы не смогут вносить продажи'
+        +(curMk()<SCH_ENFORCE_FROM?' (с '+schEnforceLabel()+')':'')+'.</div>';
+    if(own&&later.length)
+      h+='<div class="alert" style="background:var(--al);color:var(--amber)">⚠️ Дальше в месяце не закрыто: '
+        +schDatesLabel(later.slice(0,20))+(later.length>20?' и ещё '+(later.length-20):'')+'</div>';
+    box.innerHTML=h;
   }
 }
 
@@ -2438,33 +2443,81 @@ window.schExportExcel=function(){
 }
 
 // ── ИНТЕГРАЦИЯ С ВВОДОМ ПРОДАЖ ────────────────────────────────────
-// Месяц считается заполненным, если есть хотя бы одна отметка.
-// Блокируем только когда график не заполнен вообще.
-async function schMonthFilled(uid,mk){
-  const [a,b]=schMonthRange(mk);
-  const r=await schFetch('/schedule?select=uid&uid=eq.'+encodeURIComponent(uid)
-    +'&date=gte.'+a+'&date=lte.'+b+'&limit=1');
-  return Array.isArray(r)&&r.length>0;
-}
-// С какого месяца блокировка ввода продаж работает жёстко.
-// Раньше этого месяца незаполненный график даёт только предупреждение,
-// продажи сохраняются. Нужно, чтобы включение модуля не остановило
-// ввод выручки в уже идущем месяце: люди сначала видят напоминание,
-// заполняют график, и только со следующего месяца включается запрет.
+// Горизонт планирования: график магазина должен быть закрыт на
+// ближайшие 7 дней, считая от сегодня.
+//
+// Проверяем ПОКРЫТИЕ МАГАЗИНА, а не отдельного человека. Выходной в
+// графике — это просто пустая клетка, поэтому «у продавца заполнены
+// все дни» проверить невозможно: законный выходной неотличим от
+// незаполненного дня. А вот «на точке в этот день кто-то стоит» —
+// проверяется однозначно и совпадает по смыслу с алертом наверху
+// вкладки «График».
+const SCH_HORIZON_DAYS=7;
+
+// С какого месяца блокировка работает жёстко. Раньше — только
+// предупреждение, продажи сохраняются. Нужно, чтобы включение модуля
+// не остановило ввод выручки в уже идущем месяце.
 const SCH_ENFORCE_FROM='2026-08';
 
-// 'ok' | 'soft' (сохраняем, но предупреждаем) | 'block'
+const SCH_MON=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+function schAddDays(d,n){
+  const x=new Date(d+'T00:00:00');x.setDate(x.getDate()+n);
+  return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');
+}
+// '2026-08' → «1 августа» — дата, с которой включается запрет
+function schEnforceLabel(){
+  const p=SCH_ENFORCE_FROM.split('-');
+  return new Date(+p[0],+p[1]-1,1).toLocaleDateString('ru-RU',{day:'numeric',month:'long'});
+}
+// ['2026-07-31','2026-08-01'] → «31 июл · 1 авг»
+function schDatesLabel(ds){
+  const g={};
+  ds.forEach(d=>{const p=d.split('-');(g[p[1]]=g[p[1]]||[]).push(+p[2])});
+  return Object.keys(g).sort().map(m=>g[m].join(', ')+' '+SCH_MON[+m-1]).join(' · ');
+}
+
+// Дни ближайшего горизонта, на которые в магазине никто не поставлен.
+// null — проверять нечего (у магазина нет торговой точки).
+async function schUncoveredAhead(shop){
+  await schLoadRefs();
+  const own=schPointOfShop(shop);
+  if(!own)return null;
+  const a=today(),b=schAddDays(a,SCH_HORIZON_DAYS);
+  const rows=await schFetch('/schedule?select=date,planned_point,shift_type&shop=eq.'
+    +encodeURIComponent(shop)+'&date=gte.'+a+'&date=lte.'+b);
+  const covered=new Set();
+  (rows||[]).forEach(r=>{
+    const t=schType(r.shift_type);
+    if(r.planned_point===own.code&&t&&t.counts_as_shift)covered.add(normDate(r.date));
+  });
+  const miss=[];
+  for(let d=a;d<=b;d=schAddDays(d,1))if(!covered.has(d))miss.push(d);
+  return miss;
+}
+
+// {st:'ok'|'soft'|'block', miss:[даты]}
 // Если модуль графика недоступен — всегда 'ok': поломка графика
 // не должна мешать сохранять выручку.
-async function schGuard(uid,date){
-  const mk=normMk(date);
-  try{if(await schMonthFilled(uid,mk))return'ok'}catch(e){return'ok'}
-  return mk<SCH_ENFORCE_FROM?'soft':'block';
+async function schGuard(shop){
+  let miss=null;
+  try{miss=await schUncoveredAhead(shop)}catch(e){return{st:'ok'}}
+  if(!miss||!miss.length)return{st:'ok'};
+  return{st:curMk()<SCH_ENFORCE_FROM?'soft':'block',miss};
 }
-function schSayBlocked(date){
-  const txt='⛔ Не заполнен график на '+normMk(date)+'. Откройте вкладку «📅 График», проставьте смены — после этого продажи сохранятся.';
+// saved=false — продажи не сохранены (жёсткая блокировка)
+// saved=true  — сохранены, но график впереди дырявый (мягкий период)
+function schSayGuard(g,saved,date){
+  const days=schDatesLabel(g.miss||[]);
+  const txt=saved
+    ? '✓ Сохранено за '+date+'. Но график магазина не закрыт на ближайшие '
+      +SCH_HORIZON_DAYS+' дней — пусто: '+days+'. Заполните вкладку «📅 График».'
+    : '⛔ График магазина не закрыт на ближайшие '+SCH_HORIZON_DAYS+' дней. '
+      +'Никто не поставлен: '+days+'. Откройте «📅 График», проставьте смены — после этого продажи сохранятся.';
   const m=document.getElementById('emsg');
-  if(m){m.style.cssText='';m.className='alert ae';m.textContent=txt}else alert(txt);
+  if(!m){alert(txt);return}
+  m.style.cssText=saved?'background:var(--al);color:var(--amber)':'';
+  m.className=saved?'alert':'alert ae';
+  m.textContent=txt;
 }
 // Автоотметка факта смены по дате ввода продаж.
 // Точка берётся из плана, если он есть; иначе — точка магазина.
