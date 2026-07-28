@@ -85,6 +85,38 @@ tr:hover td{background:var(--s2)}
 .loader{position:fixed;inset:0;background:rgba(255,255,255,.92);display:flex;align-items:center;justify-content:center;z-index:999;gap:10px;font-size:14px;color:var(--muted)}
 .print-only{display:none}
 @media print{.sb,.mh,.btn,.nav-item{display:none!important}.print-only{display:block}.cnt{padding:0}}
+/* ══ ГРАФИК СМЕН (модуль sch*) ══ */
+.sch-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--r);background:var(--surface)}
+.sch{border-collapse:separate;border-spacing:0;font-size:12px;width:auto;min-width:100%}
+.sch th,.sch td{padding:0;border:none}
+.sch tr:hover td{background:none}
+.sch-name{position:sticky;left:0;z-index:2;background:var(--surface);min-width:160px;max-width:160px;padding:6px 10px;
+  border-right:1px solid var(--border);border-bottom:1px solid var(--border);text-align:left;font-size:12.5px;line-height:1.3}
+.sch thead .sch-name{background:var(--s2);z-index:3}
+.sch-day{width:30px;min-width:30px;border-bottom:1px solid var(--border);border-right:1px solid var(--border);vertical-align:middle}
+.sch thead .sch-day{background:var(--s2);padding:4px 0;text-align:center}
+.sch-dn{display:block;font-weight:700;font-size:11px;color:var(--text)}
+.sch-dw{display:block;font-size:9px;color:var(--muted)}
+.sch-we{background:#faf7f2}
+.sch thead .sch-we{background:#ece5da}
+.sch-tot{min-width:52px;text-align:center;background:var(--s2);font-weight:700;font-size:12px;
+  border-bottom:1px solid var(--border);padding:6px 4px}
+.sch-cell{height:36px;display:flex;flex-direction:column;cursor:pointer;user-select:none}
+.sch-cell.ro{cursor:default}
+.sch-p{flex:1;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;line-height:1}
+.sch-cell:not(.ro):hover .sch-p{outline:2px solid var(--blue);outline-offset:-2px}
+.sch-f{height:5px;flex-shrink:0}
+.sch-cell.extra .sch-p{border:2px dashed var(--blue);border-radius:3px;margin:1px}
+.sch-sum td{background:var(--s2);font-weight:600;font-size:11px;text-align:center;color:var(--muted);
+  border-bottom:1px solid var(--border);padding:5px 0}
+.sch-sum .sch-name{background:var(--s2);font-weight:600;color:var(--muted);text-align:left}
+.sch-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:.75rem;font-size:12px;color:var(--muted);align-items:center}
+.sch-dot{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;margin-right:5px}
+.sch-opts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem}
+.sch-opt{padding:9px 13px;border-radius:var(--rs);border:1px solid var(--border);background:var(--surface);
+  color:var(--text);cursor:pointer;font-size:13px;font-weight:500;text-align:left}
+.sch-opt:hover{background:var(--s2)}
+.sch-opt.sel{border-color:var(--blue);background:var(--bl);color:var(--bd);font-weight:600}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
@@ -391,14 +423,17 @@ function nav(fn){
 function setupSidebar(){
   const items=CU.role==='seller'
     ?[{ic:'📊',l:'Дашборд',fn:'pgDash'},{ic:'➕',l:'Ввод продаж',fn:'pgEnter'},
+      {ic:'📅',l:'График',fn:'pgSchedule'},
       {ic:'📋',l:'История',fn:'pgHist'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'}]
     :CU.role==='manager'
     ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💹',l:'Моя ЗП',fn:'pgMgrDash'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
+      {ic:'📅',l:'График',fn:'pgSchedule'},
       {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'📖',l:'История продавцов',fn:'pgSellerHist'},
       {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
     :CU.role==='accountant'
-    ?[{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'}]
-    :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
+    ?[{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'📅',l:'График',fn:'pgSchedule'}]
+    :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
+      {ic:'📅',l:'График',fn:'pgSchedule'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
       {ic:'📖',l:'История продавцов',fn:'pgSellerHist'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
       {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
@@ -558,11 +593,30 @@ window.pgEnter=function(){
       <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="eu" class="fc" placeholder="0"></div>
     </div>
     <div class="fg" style="margin-top:4px"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" placeholder="0"></div>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn bp" onclick="saveEntry()">Сохранить</button>
       <button class="btn" onclick="loadForEdit()">Редактировать запись за дату</button>
     </div>
+    <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+      <button class="btn bbl" onclick="saveZeroShift()">🕒 Смена без продаж</button>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center">
+        Отработал, но продаж не было — смена всё равно засчитается в оклад
+      </div>
+    </div>
   </div>`);
+}
+
+// Смена без продаж: сохраняем нулевую запись за дату. Оклад считается
+// как rate × (число дней с записями), поэтому нулевая запись = +1 смена.
+window.saveZeroShift=async function(){
+  const date=document.getElementById('ed').value;
+  if(!date){alert('Выберите дату');return}
+  if(!confirm('Отметить '+date+' как смену без продаж?\n\nБудет сохранена нулевая запись: смена засчитается, выручка не изменится.'))return;
+  document.getElementById('es').value=0;
+  document.getElementById('ec').value=0;
+  document.getElementById('eu').value=0;
+  const er=document.getElementById('er');if(er)er.value=0;
+  await saveEntry();
 }
 
 window.loadForEdit=async function(){
@@ -589,8 +643,13 @@ window.saveEntry=async function(){
   const checks=parseInt(document.getElementById('ec').value)||0;
   const units=parseInt(document.getElementById('eu').value)||0;
   if(!date){alert('Выберите дату');return}
+  // ГРАФИК: не даём вводить продажи, пока график на месяц не заполнен
   L(true);
+  const schOk=await schGuard(CU.id,date);
+  if(!schOk){L(false);return}
   await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns:parseFloat(document.getElementById('er')?.value)||0});
+  // ГРАФИК: помечаем факт смены. Ошибка здесь не должна ломать сохранение продаж.
+  schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
   _sales=await api('getSales',{uid:CU.id});
   L(false);
   const m=document.getElementById('emsg');
@@ -1177,7 +1236,12 @@ window.admSaveAll=async function(uid,btn){
     byDate[d][inp.dataset.f]=parseFloat(inp.value)||0;
   });
   L(true);
-  for(const data of Object.values(byDate))await apiPost('saveSale',data);
+  const schU=USERS.find(x=>String(x.id)===String(uid));
+  for(const data of Object.values(byDate)){
+    await apiPost('saveSale',data);
+    // ГРАФИК: помечаем факт смены и при вводе продаж управляющим/админом
+    schMarkActual(uid,data.date,schU?schU.shop:null).catch(e=>console.warn('График:',e));
+  }
   L(false);
   const msg=btn.parentElement.querySelector('#emsg2');
   msg.textContent='✓ Сохранено';msg.style.color='var(--green)';
@@ -1753,6 +1817,327 @@ window.exportPayrollExcel=function(){
   XLSX.utils.book_append_sheet(wb,ws,'Начисления');
   XLSX.writeFile(wb,'FBSM_Начисления_'+mk+'.xlsx');
 }
+// ══════════════════════════════════════════════════════════════════
+// МОДУЛЬ «ГРАФИК СМЕН»
+// ------------------------------------------------------------------
+// Полностью изолирован от расчёта ЗП: все функции с префиксом sch*,
+// данные лежат в отдельных таблицах (schedule / schedule_points /
+// shift_types) и читаются напрямую через PostgREST, минуя Edge
+// Function. Ни computeZPCore, ни calcZP* не затрагиваются.
+//
+// В ячейке графика ДВА слоя:
+//   planned_point — что поставили заранее (ПЛАН)
+//   actual_point  — что проставилось по вводу продаж (ФАКТ)
+// Раздельно специально: иначе автоотметка затирала бы план и
+// невыход стал бы невидимым.
+// ══════════════════════════════════════════════════════════════════
+const SB_REST=API.replace('/functions/v1/api','/rest/v1');
+const SCH_DOW=['вс','пн','вт','ср','чт','пт','сб'];
+let SCH_POINTS=[],SCH_TYPES=[],_sch={},_schMk=null,_schShop=null;
+
+async function schFetch(path,opts={}){
+  const r=await fetch(SB_REST+path,{...opts,headers:{
+    'Content-Type':'application/json',
+    'Authorization':'Bearer '+SUPABASE_ANON_KEY,
+    'apikey':SUPABASE_ANON_KEY,
+    ...(opts.headers||{}),
+  }});
+  if(!r.ok)throw new Error('График: '+(await r.text()).slice(0,180));
+  if(r.status===204)return null;
+  const t=await r.text();
+  return t?JSON.parse(t):null;
+}
+
+async function schLoadRefs(){
+  if(SCH_POINTS.length)return;
+  const [p,t]=await Promise.all([
+    schFetch('/schedule_points?select=*&active=is.true&order=sort'),
+    schFetch('/shift_types?select=*&order=sort'),
+  ]);
+  SCH_POINTS=p||[];SCH_TYPES=t||[];
+}
+const schPoint=c=>SCH_POINTS.find(p=>p.code===c);
+const schType =c=>SCH_TYPES.find(t=>t.code===c)||SCH_TYPES[0];
+// У каждого магазина ровно одна торговая точка. Склад привязки не имеет.
+const schPointOfShop=s=>SCH_POINTS.find(p=>p.shop===s);
+// Для выбора доступны все точки того же города — так работает подмена
+// между точками (плюс склад, он в том же городе).
+function schPointsForShop(shop){
+  const own=schPointOfShop(shop);
+  return own?SCH_POINTS.filter(p=>p.city===own.city):SCH_POINTS;
+}
+function schIsWe(d){const n=new Date(d+'T00:00:00').getDay();return n===0||n===6}
+function schMonthRange(mk){return[mk+'-01',mk+'-'+String(daysInMk(mk)).padStart(2,'0')]}
+function schInList(arr){return'('+arr.map(v=>'"'+String(v).replace(/"/g,'')+'"').join(',')+')'}
+
+async function schLoad(mk,uids){
+  if(!uids.length)return{};
+  const [a,b]=schMonthRange(mk);
+  const rows=await schFetch('/schedule?select=*&date=gte.'+a+'&date=lte.'+b
+    +'&uid=in.'+encodeURIComponent(schInList(uids)));
+  const map={};
+  (rows||[]).forEach(r=>{map[r.uid+'|'+normDate(r.date)]=r});
+  return map;
+}
+
+// Магазины, доступные текущему пользователю: продавец и управляющий —
+// только свой, остальные роли — все.
+function schShops(){
+  return(CU.role==='seller'||CU.role==='manager')?[CU.shop]:SHOPS;
+}
+// В графике участвуют продавцы и управляющие выбранного магазина.
+function schVisibleUsers(shop){
+  return USERS.filter(u=>(u.role==='seller'||u.role==='manager')&&u.shop===shop)
+              .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+}
+
+// ── СТРАНИЦА ──────────────────────────────────────────────────────
+window.pgSchedule=async function(){
+  nav('pgSchedule');setTitle('График смен');setBadge('');
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  L(true);
+  try{await schLoadRefs()}
+  catch(e){L(false);setContent('<div class="alert ae">'+e.message+'</div>');return}
+  L(false);
+  const shops=schShops();
+  if(!_schMk)_schMk=curMk();
+  if(!_schShop||!shops.includes(_schShop))_schShop=shops[0];
+  setContent(`<div class="card" style="padding:.9rem 1.1rem">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <select id="sch-mk" class="fc" style="width:auto" onchange="schOnFilter()">${monthsOpts(4,3)}</select>
+        ${shops.length>1
+          ?`<select id="sch-shop" class="fc" style="width:auto" onchange="schOnFilter()">${shops.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>`
+          :`<b style="font-size:14px">${shops[0]||'—'}</b>`}
+        <div style="flex:1"></div>
+        <span style="font-size:12px;color:var(--muted)">Клик по клетке — поставить смену</span>
+      </div>
+    </div>
+    <div id="sch-alert"></div>
+    <div id="sch-body"><div class="spin" style="margin:1rem auto;display:block"></div></div>`);
+  const a=document.getElementById('sch-mk');if(a)a.value=_schMk;
+  const b=document.getElementById('sch-shop');if(b)b.value=_schShop;
+  await schRender();
+}
+
+window.schOnFilter=async function(){
+  _schMk=document.getElementById('sch-mk').value;
+  const s=document.getElementById('sch-shop');if(s)_schShop=s.value;
+  await schRender();
+}
+
+function schCellHtml(u,dt){
+  const r=_sch[u.id+'|'+dt]||null;
+  const t=r?schType(r.shift_type):null;
+  const past=dt<today();
+  const hasPlan=!!(r&&(r.planned_point||(t&&!t.needs_point)));
+  const hasFact=!!(r&&r.actual_point);
+  let bg='',txt='',col='#fff',cls='',ttl='';
+  if(hasPlan){
+    if(t&&!t.needs_point){bg=t.color;txt=t.short;ttl=t.name}
+    else{
+      const p=schPoint(r.planned_point);
+      bg=p?p.color:'#888780';
+      txt=r.planned_point+(t&&t.code!=='full'?t.short:'');
+      ttl=(p?p.name:r.planned_point)+' · '+(t?t.name:'');
+    }
+  }else if(hasFact){
+    txt=r.actual_point;col='var(--blue)';cls='extra';
+    ttl='Вышел вне графика — '+((schPoint(r.actual_point)||{}).name||r.actual_point);
+  }
+  let fbg='transparent';
+  if(hasFact){fbg='var(--green)';ttl+=' · смена подтверждена продажами'}
+  else if(hasPlan&&t&&t.counts_as_shift&&past){fbg='var(--red)';ttl+=' · факта нет'}
+  return '<td class="sch-day'+(schIsWe(dt)?' sch-we':'')+'">'
+    +'<div class="sch-cell '+cls+'" title="'+ttl+'" onclick="schOpen(\''+u.id+'\',\''+dt+'\')">'
+    +'<div class="sch-p" style="background:'+(bg||'transparent')+';color:'+col+'">'+txt+'</div>'
+    +'<div class="sch-f" style="background:'+fbg+'"></div></div></td>';
+}
+
+async function schRender(){
+  const body=document.getElementById('sch-body'),box=document.getElementById('sch-alert');
+  if(!body)return;
+  body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
+  const users=schVisibleUsers(_schShop);
+  if(!users.length){
+    body.innerHTML='<div class="card">В магазине «'+_schShop+'» нет продавцов и управляющих.</div>';
+    if(box)box.innerHTML='';return;
+  }
+  try{_sch=await schLoad(_schMk,users.map(u=>u.id))}
+  catch(e){body.innerHTML='<div class="alert ae">'+e.message+'</div>';return}
+
+  const days=[];
+  for(let d=1;d<=daysInMk(_schMk);d++)days.push(_schMk+'-'+String(d).padStart(2,'0'));
+
+  let h='<div class="sch-wrap"><table class="sch"><thead><tr><th class="sch-name">Сотрудник</th>';
+  days.forEach(dt=>{
+    const d=new Date(dt+'T00:00:00');
+    h+='<th class="sch-day'+(schIsWe(dt)?' sch-we':'')+'"><span class="sch-dn">'+d.getDate()
+      +'</span><span class="sch-dw">'+SCH_DOW[d.getDay()]+'</span></th>';
+  });
+  h+='<th class="sch-tot">План</th><th class="sch-tot">Факт</th></tr></thead><tbody>';
+
+  const rm={seller:'Продавец',manager:'Управляющий'};
+  users.forEach(u=>{
+    let pc=0,fc=0,row='';
+    days.forEach(dt=>{
+      const r=_sch[u.id+'|'+dt];
+      if(r){
+        const t=schType(r.shift_type);
+        if(t&&t.counts_as_shift&&(r.planned_point||!t.needs_point))pc++;
+        if(r.actual_point)fc++;
+      }
+      row+=schCellHtml(u,dt);
+    });
+    h+='<tr><td class="sch-name"><b>'+u.name+'</b><div style="font-size:11px;color:var(--muted)">'
+      +(rm[u.role]||u.role)+'</div></td>'+row
+      +'<td class="sch-tot">'+pc+'</td><td class="sch-tot">'+fc+'</td></tr>';
+  });
+
+  const pts=schPointsForShop(_schShop),own=schPointOfShop(_schShop),uncov=[];
+  pts.forEach(p=>{
+    let tot=0,cells='';
+    days.forEach(dt=>{
+      let c=0;
+      users.forEach(u=>{
+        const r=_sch[u.id+'|'+dt];
+        if(r&&r.planned_point===p.code){const t=schType(r.shift_type);if(t&&t.counts_as_shift)c++}
+      });
+      tot+=c;
+      if(own&&p.code===own.code&&c===0)uncov.push(dt);
+      cells+='<td class="sch-day'+(schIsWe(dt)?' sch-we':'')+'" style="text-align:center">'+(c||'')+'</td>';
+    });
+    h+='<tr class="sch-sum"><td class="sch-name">Итого · '+p.name+'</td>'+cells
+      +'<td class="sch-tot">'+tot+'</td><td class="sch-tot"></td></tr>';
+  });
+  h+='</tbody></table></div><div class="sch-legend">';
+  pts.forEach(p=>h+='<span><span class="sch-dot" style="background:'+p.color+'"></span>'+p.code+' — '+p.name+'</span>');
+  h+='<span style="margin-left:auto"><span class="sch-dot" style="background:var(--green)"></span>смена подтверждена продажами</span>'
+    +'<span><span class="sch-dot" style="background:var(--red)"></span>план был, факта нет</span>'
+    +'<span><span class="sch-dot" style="border:2px dashed var(--blue)"></span>вышел вне графика</span></div>';
+  body.innerHTML=h;
+
+  if(box){
+    const future=uncov.filter(d=>d>=today());
+    box.innerHTML=(own&&future.length)
+      ?'<div class="alert" style="background:var(--al);color:var(--amber)">⚠️ Не закрыты дни на точке «'+own.name+'»: '
+        +future.slice(0,20).map(d=>+d.slice(-2)).join(', ')
+        +(future.length>20?' и ещё '+(future.length-20):'')+'</div>'
+      :'';
+  }
+}
+
+// ── МОДАЛКА ВЫБОРА СМЕНЫ ──────────────────────────────────────────
+window.schOpen=function(uid,dt){
+  const u=USERS.find(x=>String(x.id)===String(uid));
+  const r=_sch[uid+'|'+dt]||null;
+  const pts=schPointsForShop(u?u.shop:_schShop);
+  const curP=r?r.planned_point:null,curT=r?r.shift_type:'full';
+  const d=new Date(dt+'T00:00:00');
+  const ov=document.createElement('div');ov.className='ov';ov.id='sch-ov';
+  ov.innerHTML=`<div class="ovc" style="max-width:430px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.25rem">
+      <div><b>${u?u.name:''}</b>
+        <div style="font-size:12px;color:var(--muted)">${d.toLocaleDateString('ru-RU',{day:'numeric',month:'long',weekday:'long'})}</div></div>
+      <button class="btn bsm" onclick="this.closest('.ov').remove()">✕</button>
+    </div>
+    <div class="fl">Точка</div>
+    <div class="sch-opts" id="sch-pts">${pts.map(p=>
+      `<button class="sch-opt ${curP===p.code?'sel':''}" data-p="${p.code}" onclick="schPick(this)">
+        <span class="sch-dot" style="background:${p.color}"></span>${p.code} — ${p.name}</button>`).join('')}</div>
+    <div class="fl">Тип смены</div>
+    <div class="sch-opts" id="sch-tps">${SCH_TYPES.map(t=>
+      `<button class="sch-opt ${curT===t.code?'sel':''}" data-t="${t.code}" onclick="schPick(this)">${t.name}</button>`).join('')}</div>
+    <div id="sch-note" style="font-size:12px;color:var(--muted);margin-bottom:1rem;min-height:16px"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn bp" onclick="schSave('${uid}','${dt}')">Сохранить</button>
+      ${r?`<button class="btn bd2" onclick="schClear('${uid}','${dt}')">Убрать смену</button>`:''}
+      <button class="btn" onclick="this.closest('.ov').remove()">Отмена</button>
+    </div>
+    ${r&&r.actual_point?`<div style="margin-top:1rem;font-size:12px;color:var(--green)">
+      ✓ Факт: ${r.actual_point}${r.actual_source==='sales'?' (проставлено автоматически по продажам)':''}</div>`:''}
+  </div>`;
+  document.body.appendChild(ov);
+  schNote();
+}
+window.schPick=function(btn){
+  btn.parentElement.querySelectorAll('.sch-opt').forEach(b=>b.classList.remove('sel'));
+  btn.classList.add('sel');schNote();
+}
+function schNote(){
+  const ov=document.getElementById('sch-ov');if(!ov)return;
+  const sel=ov.querySelector('#sch-tps .sel');
+  const t=schType(sel?sel.dataset.t:'full');
+  const pw=ov.querySelector('#sch-pts'),note=ov.querySelector('#sch-note');
+  if(t&&!t.needs_point){
+    pw.style.opacity='.35';pw.style.pointerEvents='none';
+    note.textContent=t.name+' — точка не нужна, в число смен не входит.';
+  }else{
+    pw.style.opacity='1';pw.style.pointerEvents='auto';
+    note.textContent=(t&&+t.k!==1)?('Коэффициент к окладу: '+t.k):'';
+  }
+}
+window.schSave=async function(uid,dt){
+  const ov=document.getElementById('sch-ov');
+  const ts=ov.querySelector('#sch-tps .sel'),t=schType(ts?ts.dataset.t:'full');
+  const ps=ov.querySelector('#sch-pts .sel');
+  const pCode=t.needs_point?(ps?ps.dataset.p:null):null;
+  if(t.needs_point&&!pCode){alert('Выберите точку');return}
+  const u=USERS.find(x=>String(x.id)===String(uid));
+  const prev=_sch[uid+'|'+dt]||{};
+  L(true);
+  try{
+    await schFetch('/schedule',{method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates'},
+      body:JSON.stringify([{uid:String(uid),date:dt,shop:u?u.shop:_schShop,
+        planned_point:pCode,actual_point:prev.actual_point||null,
+        actual_source:prev.actual_source||null,shift_type:t.code,updated_by:CU.name}])});
+  }catch(e){L(false);alert(e.message);return}
+  L(false);ov.remove();await schRender();
+}
+window.schClear=async function(uid,dt){
+  L(true);
+  try{await schFetch('/schedule?uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+dt,{method:'DELETE'})}
+  catch(e){L(false);alert(e.message);return}
+  L(false);
+  const ov=document.getElementById('sch-ov');if(ov)ov.remove();
+  await schRender();
+}
+
+// ── ИНТЕГРАЦИЯ С ВВОДОМ ПРОДАЖ ────────────────────────────────────
+// Месяц считается заполненным, если есть хотя бы одна отметка.
+// Блокируем только когда график не заполнен вообще.
+async function schMonthFilled(uid,mk){
+  const [a,b]=schMonthRange(mk);
+  const r=await schFetch('/schedule?select=uid&uid=eq.'+encodeURIComponent(uid)
+    +'&date=gte.'+a+'&date=lte.'+b+'&limit=1');
+  return Array.isArray(r)&&r.length>0;
+}
+// Если модуль графика недоступен — НЕ блокируем ввод продаж:
+// поломка графика не должна мешать сохранять выручку.
+async function schGuard(uid,date){
+  const mk=normMk(date);
+  try{if(await schMonthFilled(uid,mk))return true}catch(e){return true}
+  const txt='⛔ Не заполнен график на '+mk+'. Откройте вкладку «📅 График», проставьте смены — после этого продажи сохранятся.';
+  const m=document.getElementById('emsg');
+  if(m){m.className='alert ae';m.textContent=txt}else alert(txt);
+  return false;
+}
+// Автоотметка факта смены по дате ввода продаж.
+// Точка берётся из плана, если он есть; иначе — точка магазина.
+async function schMarkActual(uid,date,shop){
+  await schLoadRefs();
+  const rows=await schFetch('/schedule?select=*&uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date);
+  const prev=(rows&&rows[0])||null;
+  const own=schPointOfShop(shop);
+  const pt=(prev&&prev.planned_point)||(own?own.code:null);
+  if(!pt)return;
+  await schFetch('/schedule',{method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates'},
+    body:JSON.stringify([{uid:String(uid),date,shop:shop||null,
+      planned_point:prev?prev.planned_point:null,actual_point:pt,actual_source:'sales',
+      shift_type:prev?prev.shift_type:'full',updated_by:CU?CU.name:null}])});
+}
+
 init();
 </script>
 </body>
