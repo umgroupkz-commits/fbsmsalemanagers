@@ -460,7 +460,7 @@ function setupSidebar(){
     :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
       {ic:'📅',l:'График',fn:'pgSchedule'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
       {ic:'📖',l:'История продавцов',fn:'pgSellerHist'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
-      {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
+      {ic:'📥',l:'Импорт из 1С',fn:'pgImport1C'},{ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
     `<button class="ni" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:20px">${i.ic}</span>${i.l}</button>`
   ).join('');
@@ -2533,6 +2533,239 @@ async function schMarkActual(uid,date,shop){
     body:JSON.stringify([{uid:String(uid),date,shop:shop||null,
       planned_point:prev?prev.planned_point:null,actual_point:pt,actual_source:'sales',
       shift_type:prev?prev.shift_type:'full',updated_by:CU?CU.name:null}])});
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ИМПОРТ ИЗ 1С (офлайн: два файла Excel)
+// ------------------------------------------------------------------
+// Разбирает штатные отчёты 1С «Продажи» и «Отчёт по чекам» за один
+// день и раскладывает их по продавцам нашей программы.
+//
+// Иерархия в отчёте «Продажи» закодирована уровнями группировки строк:
+//   0 организация · 1 магазин · 2 склад · 3 заказ · 4 ПРОДАВЕЦ · 5 товар
+// SheetJS отдаёт их в ws['!rows'][i].level.
+//
+// Чеки в отчётах 1С отдельной колонкой не выводятся, поэтому:
+//   чеков       = сумма продаж (без возвратов) ÷ средний чек из 1С
+//   номенклатур = UPT из 1С × чеки
+// Так средний чек и UPT в программе сходятся с 1С по построению.
+// ══════════════════════════════════════════════════════════════════
+const SHOP_1C={
+  '01 Магазин на Манаса':'Манаса',
+  '02 Магазин на Республике':'Республика',
+  '03 Магазин на Асфендиярова':'Асфендиярова',
+  '04 Магазин в Алматы':'Алматы',
+  '05 Магазин в Караганде':'Караганда',
+};
+let _imp=null; // разобранный результат, ждёт подтверждения
+
+const impNum=v=>{
+  if(v==null)return 0;
+  if(typeof v==='number')return v;
+  const f=parseFloat(String(v).replace(/ /g,'').replace(/\s/g,'').replace(',','.'));
+  return isNaN(f)?0:f;
+};
+// ключ сопоставления ФИО: фамилия + первые 4 буквы имени.
+// В 1С ФИО полные («Коньшина Алина Вячеславовна»), у нас короткие.
+function impKey(n){
+  const p=String(n||'').replace(/ё/gi,'е').toLowerCase().trim().split(/\s+/);
+  return p.length>1?p[0]+'|'+p[1].slice(0,4):p[0];
+}
+function impSheet(buf){
+  // cellStyles обязателен: без него SheetJS не заполняет ws['!rows'],
+  // а вся иерархия отчёта закодирована именно уровнями группировки строк
+  const wb=XLSX.read(new Uint8Array(buf),{type:'array',cellStyles:true});
+  return wb.Sheets[wb.SheetNames[0]];
+}
+function impCells(ws){
+  const R=XLSX.utils.decode_range(ws['!ref']),rows=ws['!rows']||[];
+  return{R,lvl:r=>(rows[r]&&rows[r].level)||0,
+    at:(r,c)=>{const x=ws[XLSX.utils.encode_cell({r,c})];return x?x.v:null}};
+}
+// Отчёт «Продажи» → факт по магазинам и суммы по продавцам
+function impParseSales(ws){
+  const{R,lvl,at}=impCells(ws),path={},shops={},sellers={};
+  for(let r=R.s.r;r<=R.e.r;r++){
+    const lv=lvl(r),v=at(r,0);
+    if(v!=null){path[lv]=v;Object.keys(path).forEach(k=>{if(+k>lv)delete path[k]})}
+    const qty=impNum(at(r,4)),sum=impNum(at(r,6));
+    if(lv===1&&v)shops[v]={fact:sum,qty:qty};
+    if(lv===4&&v){
+      const k=v+'||'+path[1];
+      if(!sellers[k])sellers[k]={name:v,shop1c:path[1],sum:0,qty:0,pos:0};
+      sellers[k].sum+=sum;sellers[k].qty+=qty;
+    }
+    // строки товара: копим только положительную часть — возвраты чеков не создают
+    if(lv===5&&sum>0){
+      const k=path[4]+'||'+path[1];
+      if(sellers[k])sellers[k].pos+=sum;
+    }
+  }
+  return{shops,sellers};
+}
+// Отчёт «По чекам» → средний чек и UPT по продавцам
+function impParseChecks(ws){
+  const{R,lvl,at}=impCells(ws),out={};let shop=null;
+  for(let r=R.s.r;r<=R.e.r;r++){
+    const lv=lvl(r),v=at(r,0);
+    if(v==null||v==='')continue;
+    if(lv===0){if(/^\d+\s/.test(String(v)))shop=String(v);continue}
+    if(lv===1&&shop)out[String(v)+'||'+shop]={avg:impNum(at(r,1)),upt:impNum(at(r,2))};
+  }
+  return out;
+}
+
+window.pgImport1C=function(){
+  nav('pgImport1C');setTitle('Импорт из 1С');setBadge('');
+  setContent(`<div class="card" style="max-width:760px">
+    <div class="ct">Загрузка продаж за день</div>
+    <div class="alert ai" style="font-size:12.5px">
+      Нужны два штатных отчёта 1С <b>за один и тот же день</b>: «Продажи» и «Отчёт по чекам».
+      Выгружать как есть, без изменения настроек.
+    </div>
+    <div class="fg"><label class="fl">Дата продаж</label>
+      <input type="date" id="imp-date" class="fc" value="${today()}"></div>
+    <div class="fr">
+      <div class="fg"><label class="fl">Отчёт «Продажи»</label>
+        <input type="file" id="imp-f1" class="fc" accept=".xlsx"></div>
+      <div class="fg"><label class="fl">Отчёт «По чекам»</label>
+        <input type="file" id="imp-f2" class="fc" accept=".xlsx"></div>
+    </div>
+    <div id="imp-msg"></div>
+    <button class="btn bp" onclick="imp1cParse()">Разобрать файлы</button>
+  </div>
+  <div id="imp-preview"></div>`);
+}
+
+window.imp1cParse=async function(){
+  const d=document.getElementById('imp-date').value;
+  const f1=document.getElementById('imp-f1').files[0];
+  const f2=document.getElementById('imp-f2').files[0];
+  const msg=document.getElementById('imp-msg');
+  msg.className='';msg.textContent='';
+  if(!d){msg.className='alert ae';msg.textContent='Укажите дату';return}
+  if(!f1||!f2){msg.className='alert ae';msg.textContent='Нужны оба файла';return}
+  L(true);
+  try{
+    const [b1,b2]=await Promise.all([f1.arrayBuffer(),f2.arrayBuffer()]);
+    _imp=imp1cBuild(d,impParseSales(impSheet(b1)),impParseChecks(impSheet(b2)));
+  }catch(e){L(false);msg.className='alert ae';msg.textContent='Не удалось разобрать: '+e.message;return}
+  L(false);
+  imp1cRender();
+}
+
+// Сборка строк к загрузке. Ничего не пишет — только считает и размечает.
+function imp1cBuild(date,sales,checks){
+  const rows=[],shops={};
+  const byKey={};
+  USERS.filter(u=>!u.deleted_at).forEach(u=>{byKey[impKey(u.name)]=u});
+  Object.values(sales.sellers).forEach(s=>{
+    if(/не указан/i.test(s.name))return;
+    const shop=SHOP_1C[s.shop1c]||null;
+    const c=checks[s.name+'||'+s.shop1c]||{avg:0,upt:0};
+    const u=byKey[impKey(s.name)]||null;
+    const ch=c.avg>0?Math.round(s.pos/c.avg):0;
+    const row={
+      name:s.name,shop1c:s.shop1c,shop,uid:u?u.id:null,
+      ourName:u?u.name:null,role:u?u.role:null,
+      sales:Math.round(s.pos),
+      returns:Math.round(s.pos-s.sum),
+      net:Math.round(s.sum),
+      checks:ch,units:ch?Math.round(c.upt*ch):0,
+      avg:c.avg,upt:c.upt,
+    };
+    if(!shop)row.st='магазин не подключён';
+    else if(!u)row.st='нет в программе';
+    else if(u.role!=='seller')row.st='это '+(u.role==='manager'?'управляющий':u.role);
+    else if(u.shop!==shop)row.st='у нас числится в «'+u.shop+'»';
+    else row.st='ok';
+    rows.push(row);
+  });
+  // Факт магазина: берём цифру 1С целиком. Консультанты — только те,
+  // кто у нас заведён продавцом; всё прочее (управляющие, незаведённые,
+  // «продавец не указан») автоматически попадает в «прочее».
+  Object.entries(sales.shops).forEach(([sh1c,v])=>{
+    const shop=SHOP_1C[sh1c];if(!shop)return;
+    const cons=rows.filter(r=>r.shop===shop&&r.st==='ok').reduce((a,r)=>a+r.net,0);
+    const ch=rows.filter(r=>r.shop===shop&&r.st==='ok').reduce((a,r)=>a+r.checks,0);
+    const un=rows.filter(r=>r.shop===shop&&r.st==='ok').reduce((a,r)=>a+r.units,0);
+    shops[shop]={fact:Math.round(v.fact),consultants:Math.round(cons),checks:ch,units:un};
+  });
+  rows.sort((a,b)=>(a.shop||'я').localeCompare(b.shop||'я')||b.net-a.net);
+  return{date,rows,shops};
+}
+
+function imp1cRender(){
+  const ok=_imp.rows.filter(r=>r.st==='ok');
+  const skip=_imp.rows.filter(r=>r.st!=='ok');
+  const money=n=>fmt(n);
+  const tr=r=>`<tr${r.st==='ok'?'':' style="opacity:.55"'}>
+    <td><b>${r.name}</b>${r.ourName&&r.ourName!==r.name?`<div style="font-size:11px;color:var(--muted)">в программе: ${r.ourName}</div>`:''}</td>
+    <td>${r.shop||r.shop1c}</td>
+    <td>${money(r.sales)}</td>
+    <td style="color:var(--red)">${r.returns>0?'−'+money(r.returns):'—'}</td>
+    <td><b>${money(r.net)}</b></td>
+    <td>${r.checks||'—'}</td>
+    <td>${r.units||'—'}</td>
+    <td>${r.avg?money(r.avg):'—'}</td>
+    <td>${r.upt?r.upt.toFixed(2):'—'}</td>
+    <td>${r.st==='ok'?'<span class="tag ts">загрузим</span>':'<span class="tag tw">'+r.st+'</span>'}</td></tr>`;
+  document.getElementById('imp-preview').innerHTML=`
+    <div class="card">
+      <div class="ct">Предпросмотр за ${_imp.date} — загрузим ${ok.length}, пропустим ${skip.length}</div>
+      <div class="tw-wrap"><table>
+        <tr><th>Продавец</th><th>Магазин</th><th>Продажи</th><th>Возврат</th><th>Итого</th>
+            <th>Чеков</th><th>Номенкл.</th><th>Ср. чек</th><th>UPT</th><th></th></tr>
+        ${_imp.rows.map(tr).join('')}
+      </table></div>
+    </div>
+    <div class="card">
+      <div class="ct">Факт магазинов</div>
+      <div class="tw-wrap"><table>
+        <tr><th>Магазин</th><th>Факт за день</th><th>Консультанты</th><th>Прочее</th></tr>
+        ${Object.entries(_imp.shops).map(([s,v])=>`<tr><td><b>${s}</b></td>
+          <td>${money(v.fact)}</td><td>${money(v.consultants)}</td>
+          <td>${money(v.fact-v.consultants)}</td></tr>`).join('')}
+      </table></div>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">
+        «Прочее» — продажи управляющих, незаведённых сотрудников и чеки без указания продавца.
+      </div>
+    </div>
+    <div class="card">
+      <div id="imp-res"></div>
+      <button class="btn bp" onclick="imp1cApply()">Загрузить в программу (${ok.length})</button>
+      <button class="btn" onclick="document.getElementById('imp-preview').innerHTML='';_imp=null">Отмена</button>
+    </div>`;
+}
+
+window.imp1cApply=async function(){
+  if(!_imp)return;
+  const ok=_imp.rows.filter(r=>r.st==='ok');
+  if(!ok.length){alert('Нечего загружать');return}
+  if(!confirm(`Загрузить продажи за ${_imp.date} по ${ok.length} продавцам?\n\nДанные за эту дату будут перезаписаны.`))return;
+  const res=document.getElementById('imp-res');
+  L(true);
+  let done=0,fail=[];
+  for(const r of ok){
+    try{
+      await apiPost('saveSale',{uid:r.uid,date:_imp.date,
+        sales:r.sales,checks:r.checks,units:r.units,returns:r.returns});
+      done++;
+    }catch(e){fail.push(r.name+': '+e.message)}
+  }
+  // факт магазинов — в отдельную таблицу
+  try{
+    const rows=Object.entries(_imp.shops).map(([shop,v])=>({
+      date:_imp.date,shop,fact:v.fact,consultants:v.consultants,
+      checks:v.checks,units:v.units,source:'1c',updated_by:CU.name}));
+    if(rows.length)await schFetch('/shop_sales',{method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
+  }catch(e){fail.push('факт магазинов: '+e.message)}
+  L(false);
+  res.className=fail.length?'alert ae':'alert as';
+  res.innerHTML=fail.length
+    ? `Загружено ${done} из ${ok.length}. Ошибки:<br>`+fail.slice(0,5).join('<br>')
+    : `✓ Загружено продавцов: ${done}. Факт магазинов записан: ${Object.keys(_imp.shops).length}.`;
 }
 
 init();
