@@ -122,6 +122,7 @@ tr:hover td{background:var(--s2)}
 .sch-cell:not(.ro):hover .sch-p:empty{background:var(--bl)}
 .sch-f{height:4px;border-radius:2px;flex-shrink:0}
 .sch-cell.extra .sch-p{box-shadow:inset 0 0 0 2px var(--blue);background:var(--bl)}
+.sch-cell.noplan .sch-p{background:var(--s2);font-weight:600}
 
 .sch tbody tr.sch-sum td{background:var(--s2);font-weight:600;font-size:11.5px;text-align:center;
   color:var(--muted);border-bottom:1px solid var(--border);padding:9px 0}
@@ -2139,7 +2140,10 @@ window.schOnFilter=async function(){
   await schRender();
 }
 
-function schCellHtml(u,dt){
+// hasPlanMonth — есть ли у сотрудника хоть один план в этом месяце.
+// Если плана нет вообще, факт без плана — это не «вышел вне графика»,
+// а просто отработанная смена: нельзя нарушить график, которого нет.
+function schCellHtml(u,dt,hasPlanMonth){
   const r=_sch[u.id+'|'+dt]||null;
   const t=r?schType(r.shift_type):null;
   const past=dt<today();
@@ -2155,8 +2159,13 @@ function schCellHtml(u,dt){
       ttl=(p?p.name:r.planned_point)+' · '+(t?t.name:'');
     }
   }else if(hasFact){
-    txt=r.actual_point;col='var(--blue)';cls='extra';
-    ttl='Вышел вне графика — '+((schPoint(r.actual_point)||{}).name||r.actual_point);
+    txt=r.actual_point;
+    const pn=(schPoint(r.actual_point)||{}).name||r.actual_point;
+    if(hasPlanMonth){
+      col='var(--blue)';cls='extra';ttl='Вышел вне графика — '+pn;
+    }else{
+      col='var(--muted)';cls='noplan';ttl='Смена по факту, '+pn+' · план на месяц не заполнен';
+    }
   }
   let fbg='transparent';
   if(hasFact){fbg='var(--green)';ttl+=' · смена подтверждена продажами'}
@@ -2194,6 +2203,16 @@ async function schRender(){
   h+='<th class="sch-tot">План</th><th class="sch-tot">Факт</th></tr></thead><tbody>';
 
   const rm={seller:'Продавец',manager:'Управляющий'};
+  // у кого в этом месяце вообще есть план — от этого зависит,
+  // считать ли факт без плана выходом вне графика
+  const hasPlan={};
+  users.forEach(u=>{
+    hasPlan[u.id]=days.some(dt=>{
+      const r=_sch[u.id+'|'+dt];if(!r)return false;
+      const t=schType(r.shift_type);
+      return !!(r.planned_point||(t&&!t.needs_point));
+    });
+  });
   users.forEach(u=>{
     let pc=0,fc=0,row='';
     days.forEach(dt=>{
@@ -2203,7 +2222,7 @@ async function schRender(){
         if(t&&t.counts_as_shift&&(r.planned_point||!t.needs_point))pc++;
         if(r.actual_point)fc++;
       }
-      row+=schCellHtml(u,dt);
+      row+=schCellHtml(u,dt,hasPlan[u.id]);
     });
     h+='<tr><td class="sch-name"><b>'+u.name+'</b><div style="font-size:11px;color:var(--muted)">'
       +(rm[u.role]||u.role)+'</div></td>'+row
