@@ -502,8 +502,28 @@ window.doLogin=async function(){
   const err=document.getElementById('lerr');
   err.style.display='none';
   if(!id){err.textContent='Выберите имя';err.style.display='block';return}
-  const user=USERS.find(u=>u.id===id&&String(u.pass)===String(pass));
-  if(!user){err.textContent='Неверный пароль';err.style.display='block';return}
+  // Пароль проверяется НА СЕРВЕРЕ. Раньше сверка шла здесь, в браузере,
+  // а значит getUsers обязан был присылать пароли всех сотрудников —
+  // любой продавец видел пароль администратора через F12.
+  // Если сервер по какой-то причине не знает метод login, откатываемся
+  // на старую сверку: иначе неудачный деплой запер бы всех снаружи.
+  let user=null;
+  L(true);
+  try{
+    const r=await api('login',{id,pass});
+    if(!r||r.ok!==true){
+      L(false);
+      err.textContent=(r&&r.reason)||'Неверное имя или пароль';
+      err.style.display='block';return;
+    }
+    user=r.user; window._authToken=r.token;
+  }catch(e){
+    user=USERS.find(u=>u.id===id&&String(u.pass)===String(pass))||null;
+    if(!user){
+      L(false);
+      err.textContent='Неверное имя или пароль';err.style.display='block';return;
+    }
+  }
   document.getElementById('lpass').value='';
   CU=user;
   document.getElementById('sb-name').textContent=CU.name;
