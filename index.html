@@ -566,10 +566,11 @@ function setupSidebar(){
     :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
       {ic:'📅',l:'График',fn:'pgSchedule'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
       {ic:'📖',l:'История продавцов',fn:'pgSellerHist'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
-      {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
+      {ic:'👥',l:'Новые из 1С',fn:'pgQueue'},{ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
     `<button class="ni" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:20px">${i.ic}</span>${i.l}</button>`
   ).join('');
+  queueBadge();
   if(CU.role==='seller')pgDash();
   else if(CU.role==='accountant')pgPayroll();
   else pgReport();
@@ -2668,6 +2669,152 @@ window.toggleMonthClosed=async function(mk){
   }catch(e){L(false);alert('Не удалось: '+e.message+'\n\nВозможно, не выполнен скрипт 03_closed_months_audit.sql');return}
   L(false);
   loadPayroll();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ОЧЕРЕДЬ НОВЫХ СОТРУДНИКОВ ИЗ 1С
+// ------------------------------------------------------------------
+// Новый человек из 1С НЕ появляется в программе сам — он висит в
+// очереди, пока главный администратор не назначит роль и магазин.
+//
+// Иначе список сотрудников засорился бы служебными учётками 1С
+// (Loyal, obmen, Prosystems, Менеджер ИМ) и людьми с другой
+// мотивацией, а расчёт по магазинам поехал бы.
+//
+// «Игнорировать навсегда» нужно именно для служебных: без него они
+// возвращались бы в очередь при каждом обмене.
+// ══════════════════════════════════════════════════════════════════
+
+async function queuePending(){
+  try{
+    return await schFetch('/import_queue?select=*&status=eq.pending&order=first_seen')||[];
+  }catch(e){ return []; }   // таблицы ещё нет — молчим
+}
+
+// Счётчик в боковом меню. Дорисовывается после отрисовки меню,
+// потому что требует запроса, а меню строится сразу.
+async function queueBadge(){
+  if(!CU||CU.role!=='admin')return;
+  const rows=await queuePending();
+  const el=document.getElementById('n-pgQueue');
+  if(!el)return;
+  const old=el.querySelector('.qbadge'); if(old)old.remove();
+  if(!rows.length)return;
+  const b=document.createElement('span');
+  b.className='qbadge';
+  b.style.cssText='margin-left:auto;background:var(--amber);color:#fff;border-radius:100px;'
+    +'font-size:11px;font-weight:700;padding:1px 7px';
+  b.textContent=rows.length;
+  el.appendChild(b);
+}
+
+window.pgQueue=async function(){
+  nav('pgQueue');setTitle('Новые из 1С');setBadge('');
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  const rows=await queuePending();
+  if(!rows.length){
+    setContent('<div class="card"><div class="ct">Новых нет</div>'
+      +'<div style="color:var(--muted);font-size:13px">Все, кто пришёл из 1С, уже разобраны. '
+      +'Новые появятся здесь после следующего обмена.</div></div>'
+      +'<div id="q-decided"></div>');
+    queueDecided();return;
+  }
+  const shopOpts=s=>SHOPS.map(x=>'<option value="'+esc(x)+'"'+(x===s?' selected':'')+'>'+esc(x)+'</option>').join('');
+  const roleOpts=r=>Object.entries(ROLE_LABELS).map(([k,v])=>
+    '<option value="'+k+'"'+(k===r?' selected':'')+'>'+v+'</option>').join('');
+  setContent('<div class="card" style="border-color:var(--amber)">'
+    +'<div class="ct">👤 Ждут решения — '+rows.length+'</div>'
+    +'<div class="alert ai" style="font-size:12.5px">Пришли из 1С, но в программу не добавлены. '
+    +'Проверьте роль и магазин, потом добавьте. Служебные учётки 1С отправьте в «Игнорировать» — '
+    +'иначе они вернутся при следующем обмене.</div>'
+    +'<div class="tw-wrap"><table><tr><th>ФИО из 1С</th><th>Магазин в 1С</th><th>Должность</th>'
+    +'<th>Роль у нас</th><th>Магазин у нас</th><th></th></tr>'
+    +rows.map(r=>'<tr>'
+      +'<td><b>'+esc(r.name)+'</b></td>'
+      +'<td style="font-size:12px;color:var(--muted)">'+esc(r.ext_shop||'—')+'</td>'
+      +'<td style="font-size:12px">'+esc(r.position||'—')+'</td>'
+      +'<td><select class="fc" style="padding:4px 6px;font-size:12px" id="qr-'+esc(r.ext_id)+'">'+roleOpts(r.sugg_role)+'</select></td>'
+      +'<td><select class="fc" style="padding:4px 6px;font-size:12px" id="qs-'+esc(r.ext_id)+'">'+shopOpts(r.sugg_shop)+'</select></td>'
+      +'<td style="white-space:nowrap">'
+      +'<button class="btn bsm bp" onclick="queueApprove(\''+esc(r.ext_id)+'\',this)">Добавить</button> '
+      +'<button class="btn bsm bd2" onclick="queueIgnore(\''+esc(r.ext_id)+'\',this)">Игнорировать</button>'
+      +'</td></tr>').join('')
+    +'</table></div>'
+    +'<div id="q-msg" style="margin-top:.75rem;font-size:13px"></div></div>'
+    +'<div id="q-decided"></div>');
+  queueDecided();
+}
+
+// Разобранные — чтобы видеть, кого добавили и кого скрыли,
+// и чтобы можно было вернуть ошибочно проигнорированного.
+async function queueDecided(){
+  const box=document.getElementById('q-decided');
+  if(!box)return;
+  let rows=[];
+  try{ rows=await schFetch('/import_queue?select=*&status=neq.pending&order=decided_at.desc&limit=50')||[] }catch(e){}
+  if(!rows.length){box.innerHTML='';return}
+  box.innerHTML='<div class="card"><div class="ct">Уже разобраны</div>'
+    +'<div class="tw-wrap"><table><tr><th>ФИО из 1С</th><th>Решение</th><th>Кто</th><th>Когда</th><th></th></tr>'
+    +rows.map(r=>'<tr><td>'+esc(r.name)+'</td>'
+      +'<td>'+(r.status==='approved'
+          ?'<span class="tag ts">добавлен</span>'
+          :'<span class="tag td">игнорируется</span>')+'</td>'
+      +'<td style="font-size:12px">'+esc(r.decided_by||'—')+'</td>'
+      +'<td style="font-size:12px">'+(r.decided_at?String(r.decided_at).slice(0,10):'—')+'</td>'
+      +'<td>'+(r.status==='ignored'
+          ?'<button class="btn bsm" onclick="queueReturn(\''+esc(r.ext_id)+'\',this)">Вернуть в очередь</button>':'')+'</td>'
+      +'</tr>').join('')
+    +'</table></div></div>';
+}
+
+window.queueApprove=async function(extId,btn){
+  const role=document.getElementById('qr-'+extId).value;
+  const shop=document.getElementById('qs-'+extId).value;
+  const rows=await schFetch('/import_queue?select=*&ext_id=eq.'+encodeURIComponent(extId));
+  const r=rows&&rows[0];
+  if(!r){alert('Запись не найдена');return}
+  if(!confirm('Добавить «'+r.name+'»?\n\nРоль: '+(ROLE_LABELS[role]||role)+'\nМагазин: '+shop
+    +'\nПароль: 1234 (сотрудник сменит сам)'))return;
+  if(btn)btn.disabled=true;
+  L(true);
+  try{
+    const res=await apiPost('addUser',{name:r.name,shop,role,pass:'1234'});
+    await schFetch('/import_queue?ext_id=eq.'+encodeURIComponent(extId),{method:'PATCH',
+      body:JSON.stringify({status:'approved',uid:res.id,sugg_role:role,sugg_shop:shop,
+        decided_at:new Date().toISOString(),decided_by:CU.name})});
+    logAction('queueApprove',r.name,null,{ext_id:extId,role,shop,uid:res.id});
+    USERS=await api('getUsers');
+  }catch(e){L(false);if(btn)btn.disabled=false;alert('Не удалось: '+e.message);return}
+  L(false);
+  pgQueue();queueBadge();
+}
+
+window.queueIgnore=async function(extId,btn){
+  const rows=await schFetch('/import_queue?select=name&ext_id=eq.'+encodeURIComponent(extId));
+  const nm=(rows&&rows[0]||{}).name||extId;
+  if(!confirm('Игнорировать «'+nm+'» навсегда?\n\nБольше не будет появляться в очереди. '
+    +'Вернуть можно из списка разобранных.'))return;
+  if(btn)btn.disabled=true;
+  L(true);
+  try{
+    await schFetch('/import_queue?ext_id=eq.'+encodeURIComponent(extId),{method:'PATCH',
+      body:JSON.stringify({status:'ignored',decided_at:new Date().toISOString(),decided_by:CU.name})});
+    logAction('queueIgnore',nm,null,{ext_id:extId});
+  }catch(e){L(false);if(btn)btn.disabled=false;alert('Не удалось: '+e.message);return}
+  L(false);
+  pgQueue();queueBadge();
+}
+
+window.queueReturn=async function(extId,btn){
+  if(btn)btn.disabled=true;
+  L(true);
+  try{
+    await schFetch('/import_queue?ext_id=eq.'+encodeURIComponent(extId),{method:'PATCH',
+      body:JSON.stringify({status:'pending',decided_at:null,decided_by:null})});
+    logAction('queueReturn',extId,null,null);
+  }catch(e){L(false);alert('Не удалось: '+e.message);return}
+  L(false);
+  pgQueue();queueBadge();
 }
 
 // ══════════════════════════════════════════════════════════════════
