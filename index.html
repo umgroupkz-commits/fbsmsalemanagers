@@ -331,6 +331,17 @@ function motiv(p){
 
 // Базовые параметры сетки продавца (использовались как магические числа
 // в старом коде — теперь одно место истины, аналогично MGR_DEFAULTS ниже).
+// Подписи ролей — одно место истины вместо четырёх копий карты.
+const ROLE_LABELS={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+// Итоги по записям продаж за период. Этот подсчёт был скопирован дословно
+// в шести местах: дашборд, история, история продавцов, рейтинг, сводка,
+// начисление. Правка в одном из них разъехалась бы с остальными.
+// net — выручка за вычетом возвратов, не ниже нуля.
+function sumEntries(ents){
+  let sales=0,checks=0,units=0,returns=0;
+  (ents||[]).forEach(e=>{sales+=+e.sales;checks+=+e.checks;units+=+e.units;returns+=+(e.returns||0)});
+  return {sales,checks,units,returns,net:Math.max(0,sales-returns)};
+}
 const SELLER_DEFAULTS={rate:6000,shifts:15,base:0.01,p80:0.005,p100:0.015,p140:0.03,bMag:10000,bKpi:10000,avgNorm:15000,uptNorm:2.5};
 
 // Общее ядро расчёта ЗП — "лестница" бонусов 80/100/140% и KPI,
@@ -548,8 +559,7 @@ window.pgDash=async function(){
   L(false);
   const plan=getPlan(CU.id,mk);
   const entries=getEntriesFor(CU.id,mk);
-  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-  ts=Math.max(0,ts-tr);
+  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
   // Дней с продажами, взвешенных по типу смены из графика (полсмены = 0.5)
   const actualShifts=schShifts(CU.id,entries);
   const pct=plan>0?ts/plan:0;
@@ -784,8 +794,7 @@ window.loadHist=async function(){
   L(false);
   const entries=getEntriesFor(CU.id,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
   const plan=getPlan(CU.id,mk);
-  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-  ts=Math.max(0,ts-tr);
+  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
   const pct=plan>0?ts/plan:0;
   let html='';
   if(!entries.length){
@@ -857,8 +866,7 @@ window.loadSellerHist=async function(){
   L(false);
   const entries=getEntriesFor(uid,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
   const plan=getPlan(uid,mk);
-  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-  ts=Math.max(0,ts-tr);
+  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
   const pct=plan>0?ts/plan:0;
   let html='';
   if(!entries.length){
@@ -913,8 +921,7 @@ window.loadRating=async function(){
   const sellers=USERS.filter(u=>u.role==='seller');
   const rows=sellers.map(u=>{
     const entries=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-    ts=Math.max(0,ts-tr);
+    const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
     const avg=tc>0?ts/tc:0;
     const upt=tc>0?tu/tc:0;
     const plan=getPlan(u.id,mk);
@@ -966,8 +973,7 @@ window.loadReport=async function(forceRefresh){
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0,tr=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-    ts=Math.max(0,ts-tr);
+    const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(ents);
     const actualShifts=schShifts(u.id,ents);
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
@@ -1059,8 +1065,7 @@ window.loadPayroll=async function(forceRefresh){
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0,tr=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-    ts=Math.max(0,ts-tr);
+    const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(ents);
     const actualShifts=schShifts(u.id,ents);
     const plan=getPlan(u.id,mk);
     const ss=(window._shopStats||{})[u.shop]||{plan:0,fact:0,pct:0};
@@ -1141,7 +1146,7 @@ window.loadPayroll=async function(forceRefresh){
       let mtc=0,mtu=0;
       sellerIds.forEach(sid=>{getEntriesFor(sid,mk).forEach(e=>{mtc+=+e.checks;mtu+=+e.units;});});
       const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,fines:0};
-      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,22);
+      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,mgrShifts());
       const comm2=z2.base+z2.a80+z2.a100+z2.a140;
       const mdeductions=(+adj.advance||0)+(+adj.pension||0)+(+adj.fines||0);
       const mpayout=z2.total-mdeductions;
@@ -1149,7 +1154,7 @@ window.loadPayroll=async function(forceRefresh){
       const MP=MGR_PARAMS,MD=MGR_DEFAULTS;
       window._payrollRows.push({
         kind:'manager',
-        name:m.name,role:'Управляющий',shop:m.shop,shifts:22,
+        name:m.name,role:'Управляющий',shop:m.shop,shifts:mgrShifts(),
         oklad:z2.oklad,pct:comm2,bonus:z2.bk1+z2.bk2,
         advance:+adj.advance||0,pension:+adj.pension||0,fines:+adj.fines||0,
         total:z2.total,payout:mpayout,
@@ -1171,7 +1176,7 @@ window.loadPayroll=async function(forceRefresh){
       mgrHtml+='<td><b>'+esc(m.name)+'</b>'+(hasCorr?' <span class="tag tw">✎</span>':'')+'</td><td>'+esc(m.shop)+'</td>';
       mgrHtml+='<td>'+fmt(z2.factForTiers)+'</td>';
       mgrHtml+='<td style="color:'+barCol(z2.pctUsed)+';font-weight:700">'+Math.round(z2.pctUsed*100)+'%</td>';
-      mgrHtml+='<td>22</td>';
+      mgrHtml+='<td>'+fmtSh(mgrShifts())+'</td>';
       mgrHtml+='<td>'+fmt(z2.oklad)+'</td>';
       mgrHtml+='<td>'+fmt(comm2)+'</td>';
       mgrHtml+='<td>'+fmt(z2.bk1+z2.bk2)+'</td>';
@@ -1179,7 +1184,7 @@ window.loadPayroll=async function(forceRefresh){
       mgrHtml+='<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(mpayout)+'</td>';
       mgrHtml+='<td style="white-space:nowrap">'
         +'<button class="btn bsm" onclick=\'openAdjust('+escAttr({uid:m.id,name:m.name,mk,realSales:ss2.fact,role:"manager"})+')\'>💵</button>'
-        +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:22,role:"manager"})+')\'>🖨️</button>'
+        +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:mgrShifts(),role:"manager"})+')\'>🖨️</button>'
         +'</td>';
       mgrHtml+='</tr>';
     });
@@ -1423,7 +1428,7 @@ window.renderDeletedUsers=async function(){
   const el=document.getElementById('dlist');
   if(!el) return;
   const deleted=await api('getDeletedUsers',{});
-  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+  const rm=ROLE_LABELS;
   if(deleted.length===0){
     el.innerHTML='<div style="color:var(--muted);font-size:13px">Нет удалённых сотрудников</div>';
     return;
@@ -1470,7 +1475,7 @@ window.hardDeleteClick=async function(id,name){
 function renderSellers(){
   let users=CU.role==='admin'?USERS:USERS.filter(u=>u.shop===CU.shop);
   users=[...users].sort((a,b)=>a.name.localeCompare(b.name));
-  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+  const rm=ROLE_LABELS;
   document.getElementById('slist').innerHTML=`<div class="tw-wrap"><table>
     <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th></th></tr>
     ${users.map(u=>{
@@ -1736,6 +1741,10 @@ window.pgOpenReport=function(){
 // УПРАВЛЯЮЩИЙ — ЗП и ранги
 // ════════════════════════════════════════
 const MGR_DEFAULTS={rate:30000,shifts:22,base:0.005,p80:0.0025,p100:0.0025,p140:0.005,bKpi:20000,avgNorm:15000,uptNorm:2.5};
+// Норма смен управляющего. Раньше в начислении стояло зашитое 22, а на
+// странице «Моя ЗП» — настраиваемый параметр: стоило поменять норму в
+// «Параметрах», и два экрана показали бы разные оклады.
+const mgrShifts=()=>parseFloat(MGR_PARAMS.shifts)||MGR_DEFAULTS.shifts;
 let MGR_PARAMS={...MGR_DEFAULTS};
 
 function getMgrRank(p){
@@ -2278,7 +2287,7 @@ async function schRender(){
   });
   h+='<th class="sch-tot">План</th><th class="sch-tot">Факт</th></tr></thead><tbody>';
 
-  const rm={seller:'Продавец',manager:'Управляющий'};
+  const rm=ROLE_LABELS;
   // у кого в этом месяце вообще есть план — от этого зависит,
   // считать ли факт без плана выходом вне графика
   const hasPlan={};
@@ -2434,7 +2443,7 @@ window.schExportExcel=function(){
   for(let d=1;d<=nd;d++)days.push(_schMk+'-'+String(d).padStart(2,'0'));
   const [yy,mm]=_schMk.split('-');
   const title=new Date(+yy,+mm-1,1).toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
-  const rm={seller:'Продавец',manager:'Управляющий'};
+  const rm=ROLE_LABELS;
   const pts=schPointsForShop(_schShop);
   const wb=XLSX.utils.book_new();
 
