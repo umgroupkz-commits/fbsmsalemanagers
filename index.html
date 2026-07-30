@@ -505,25 +505,15 @@ window.doLogin=async function(){
   // Пароль проверяется НА СЕРВЕРЕ. Раньше сверка шла здесь, в браузере,
   // а значит getUsers обязан был присылать пароли всех сотрудников —
   // любой продавец видел пароль администратора через F12.
-  // Если сервер по какой-то причине не знает метод login, откатываемся
-  // на старую сверку: иначе неудачный деплой запер бы всех снаружи.
   let user=null;
   L(true);
-  try{
-    const r=await api('login',{id,pass});
-    if(!r||r.ok!==true){
-      L(false);
-      err.textContent=(r&&r.reason)||'Неверное имя или пароль';
-      err.style.display='block';return;
-    }
-    user=r.user; window._authToken=r.token;
-  }catch(e){
-    user=USERS.find(u=>u.id===id&&String(u.pass)===String(pass))||null;
-    if(!user){
-      L(false);
-      err.textContent='Неверное имя или пароль';err.style.display='block';return;
-    }
+  const r=await api('login',{id,pass});
+  L(false);
+  if(!r||r.ok!==true){
+    err.textContent=(r&&r.reason)||'Неверное имя или пароль';
+    err.style.display='block';return;
   }
+  user=r.user; window._authToken=r.token;
   document.getElementById('lpass').value='';
   CU=user;
   document.getElementById('sb-name').textContent=CU.name;
@@ -1569,15 +1559,17 @@ window.openEditUser=function(id){
 }
 
 window.saveEditUser=async function(id){
-  const u=USERS.find(x=>x.id===id);
   const name=document.getElementById('eu-name').value.trim();
   const shop=document.getElementById('eu-shop').value;
   const role=document.getElementById('eu-role').value;
   const pass=document.getElementById('eu-pass').value.trim();
   if(!name){alert('Введите имя');return}
-  const newPass=pass||u.pass;
+  // Пустое поле пароля = не менять. Раньше сюда подставлялся старый
+  // пароль из USERS, но getUsers их больше не отдаёт — теперь решение
+  // принимает сервер: пустой пароль он просто не трогает.
   L(true);
-  await apiPost('updateUser',{id,name,shop,role,pass:newPass});
+  await apiPost('updateUser',{id,name,shop,role,pass});
+  logAction('updateUser',name,null,{shop,role,passChanged:!!pass});
   USERS=await api('getUsers');
   // refresh login select
   const sel=document.getElementById('lname');
