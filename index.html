@@ -715,7 +715,8 @@ window.calcScen=function(){
 // ══ ВВОД ПРОДАЖ ══
 window.pgEnter=function(){
   nav('pgEnter');setTitle('Ввод продаж');setBadge('');
-  setContent(`<div class="card" style="max-width:480px">
+  setContent(`<div id="pending-box"></div>
+  <div class="card" style="max-width:480px">
     <div class="ct">Добавить / изменить продажи</div>
     <div id="emsg"></div>
     <div class="fg"><label class="fl">Дата</label><input type="date" id="ed" class="fc" value="${today()}"></div>
@@ -736,6 +737,7 @@ window.pgEnter=function(){
       </div>
     </div>
   </div>`);
+  renderPending();
 }
 
 // Смена без продаж: сохраняем нулевую запись за дату. Оклад считается
@@ -990,7 +992,7 @@ window.pgReport=async function(){
     <select id="repMk" class="fc" style="width:auto" onchange="loadReport()">${monthsOpts(6)}</select>
     <button class="btn bsm" onclick="loadReport(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>
     <span id="repUpdatedAt" style="font-size:12px;color:var(--muted)"></span>
-  </div><div id="repBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
+  </div><div id="notconf-box"></div><div id="repBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>`);
   await loadReport();
 }
 
@@ -1060,6 +1062,7 @@ window.loadReport=async function(forceRefresh){
     </div>`;
   });
   document.getElementById('repBody').innerHTML=html||'<div style="color:var(--muted)">Нет данных</div>';
+  renderNotConfirmed();
 }
 
 // ══ НАЧИСЛЕНИЕ ЗП ══
@@ -1105,6 +1108,9 @@ window.loadPayroll=async function(forceRefresh){
   const managers=(CU.role==='admin'||CU.role==='accountant')?USERS.filter(u=>u.role==='manager'):USERS.filter(u=>u.role==='manager'&&u.shop===CU.shop);
 
   window._payrollRows=[]; // сброс для экспорта
+  // Подтянуть правки 1С по уже подтверждённым дням до того, как считать
+  const resynced=await syncConfirmed(sellers.map(u=>u.id));
+  if(resynced){ _sales=(await api('getBundle',{mk,needShopStats:1})).sales; }
   await schLoadWeights(mk,sellers.map(u=>u.id)); // ГРАФИК: коэффициенты смен
 
   const byShop={};
@@ -2662,6 +2668,151 @@ window.toggleMonthClosed=async function(mk){
   }catch(e){L(false);alert('Не удалось: '+e.message+'\n\nВозможно, не выполнен скрипт 03_closed_months_audit.sql');return}
   L(false);
   loadPayroll();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ПОДТВЕРЖДЕНИЕ ПРОДАЖ ИЗ 1С
+// ------------------------------------------------------------------
+// Данные из 1С попадают в предбанник sales_pending, а не сразу в
+// расчёт. Консультант видит свои цифры за день, править не может,
+// жмёт «Подтвердить» — и только тогда день уходит в sales и идёт
+// в зарплату. Не подтвердил — дня нет, смены нет.
+//
+// Смысл не в контроле, а в том, чтобы человек каждый день видел свою
+// выручку и процент плана, а не узнавал о них из расчётного листа.
+//
+// Подтверждать можно задним числом. Автоподтверждения нет намеренно.
+// Если 1С позже поправит уже подтверждённый день — цифры обновятся
+// тихо, повторно подтверждать не нужно.
+// ══════════════════════════════════════════════════════════════════
+
+// Ждут подтверждения у конкретного сотрудника
+async function pendingFor(uid){
+  try{
+    return await schFetch('/sales_pending?select=*&uid=eq.'+encodeURIComponent(uid)
+      +'&confirmed_at=is.null&order=date.desc')||[];
+  }catch(e){ return []; }   // таблицы ещё нет — ведём себя как раньше
+}
+// Сколько неподтверждённых дней у продавцов магазина
+async function pendingCount(uids){
+  if(!uids.length)return [];
+  try{
+    return await schFetch('/sales_pending?select=uid,date&confirmed_at=is.null&uid=in.'
+      +encodeURIComponent(schInList(uids)))||[];
+  }catch(e){ return []; }
+}
+
+window.confirmDay=async function(date,btn){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
+  if(btn)btn.disabled=true;
+  L(true);
+  try{
+    const rows=await schFetch('/sales_pending?select=*&uid=eq.'+encodeURIComponent(CU.id)
+      +'&date=eq.'+date);
+    const r=rows&&rows[0];
+    if(!r){L(false);alert('Данные за '+date+' не найдены');return}
+    // В расчёт данные попадают ровно здесь и только здесь
+    await apiPost('saveSale',{uid:CU.id,date,
+      sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0});
+    await schFetch('/sales_pending?uid=eq.'+encodeURIComponent(CU.id)+'&date=eq.'+date,
+      {method:'PATCH',body:JSON.stringify({confirmed_at:new Date().toISOString(),confirmed_by:CU.name})});
+    logAction('confirmSales',CU.name,date,{sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0});
+    schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
+    _sales=await api('getSales',{uid:CU.id});
+  }catch(e){ L(false); if(btn)btn.disabled=false; alert('Не удалось подтвердить: '+e.message); return; }
+  L(false);
+  pgEnter();
+}
+
+// Блок «ждут подтверждения» на странице ввода продаж
+async function renderPending(){
+  const box=document.getElementById('pending-box');
+  if(!box)return;
+  await syncConfirmed([CU.id]);      // 1С могла поправить уже подтверждённое
+  const rows=await pendingFor(CU.id);
+  if(!rows.length){ box.innerHTML=''; return; }
+  const d=x=>new Date(x+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'});
+  box.innerHTML='<div class="card" style="border-color:var(--amber)">'
+    +'<div class="ct">📥 Данные из 1С — подтвердите</div>'
+    +'<div class="alert ai" style="font-size:12.5px">Цифры пришли из 1С, править их нельзя. '
+    +'Пока не подтвердите — день не попадёт в зарплату и смена не засчитается.</div>'
+    +'<div class="tw-wrap"><table><tr><th>Дата</th><th>Продажи</th><th>Чеков</th>'
+    +'<th>Позиций</th><th>Возврат</th><th>Средний чек</th><th></th></tr>'
+    +rows.map(r=>{
+      const net=Math.max(0,(+r.sales||0)-(+r.returns||0));
+      const avg=(+r.checks||0)>0?net/(+r.checks):0;
+      return '<tr><td><b>'+d(normDate(r.date))+'</b></td>'
+        +'<td>'+fmt(+r.sales||0)+'</td><td>'+(+r.checks||0)+'</td><td>'+(+r.units||0)+'</td>'
+        +'<td style="color:var(--red)">'+((+r.returns||0)>0?'−'+fmt(+r.returns):'—')+'</td>'
+        +'<td>'+(avg?fmt(avg):'—')+'</td>'
+        +'<td><button class="btn bp bsm" onclick="confirmDay(\''+normDate(r.date)+'\',this)">Подтвердить</button></td></tr>';
+    }).join('')
+    +'</table></div></div>';
+}
+
+
+
+// 1С могла поправить документ задним числом — например, оформили
+// возврат или перепровели чек. Подтверждённый день тогда обновляем
+// ТИХО: человек уже подтвердил, что смена была, а сумма должна
+// соответствовать 1С. Повторно дёргать его незачем.
+//
+// Закрытые месяцы не трогаем: там зарплата уже выдана.
+async function syncConfirmed(uids){
+  if(!uids||!uids.length)return 0;
+  let rows;
+  try{
+    rows=await schFetch('/sales_pending?select=*&confirmed_at=not.is.null&uid=in.'
+      +encodeURIComponent(schInList(uids)));
+  }catch(e){ return 0; }
+  const stale=(rows||[]).filter(r=>{
+    if(!r.src_updated_at||!r.confirmed_at)return false;
+    if(isClosed(normMk(normDate(r.date))))return false;
+    return Date.parse(r.src_updated_at)>Date.parse(r.confirmed_at);
+  });
+  let done=0;
+  for(const r of stale){
+    const date=normDate(r.date);
+    try{
+      await apiPost('saveSale',{uid:r.uid,date,
+        sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0});
+      await schFetch('/sales_pending?uid=eq.'+encodeURIComponent(r.uid)+'&date=eq.'+date,
+        {method:'PATCH',body:JSON.stringify({confirmed_at:new Date().toISOString()})});
+      logAction('resyncFrom1C',r.uid,date,{sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0});
+      done++;
+    }catch(e){ console.warn('Пересинхронизация',date,e); }
+  }
+  return done;
+}
+
+// Кто не подтвердил свои дни. Показывается управляющему, бухгалтеру и
+// админу на «Сводке»: подтверждение — обязанность продавца, но следить
+// за ним приходится тому, кто отвечает за магазин.
+async function renderNotConfirmed(){
+  const box=document.getElementById('notconf-box');
+  if(!box)return;
+  const sellers=getVisibleSellers();
+  const rows=await pendingCount(sellers.map(u=>u.id));
+  if(!rows.length){box.innerHTML='';return}
+  const byUid={};
+  rows.forEach(r=>{(byUid[r.uid]=byUid[r.uid]||[]).push(normDate(r.date))});
+  const items=Object.entries(byUid).map(function(e){
+    const uid=e[0], dates=e[1];
+    const u=sellers.find(x=>String(x.id)===String(uid));
+    dates.sort();
+    return {name:u?u.name:uid, shop:u?u.shop:'', dates:dates};
+  }).sort((a,b)=>b.dates.length-a.dates.length);
+  const total=rows.length;
+  box.innerHTML='<div class="card" style="border-color:var(--amber)">'
+    +'<div class="ct">\u23F3 Не подтверждены данные из 1С — '+total+' дн.</div>'
+    +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:.75rem">'
+    +'Пока продавец не подтвердит день, он не идёт в зарплату и смена не засчитывается.</div>'
+    +'<div class="tw-wrap"><table><tr><th>Продавец</th><th>Магазин</th><th>Дней</th><th>Какие</th></tr>'
+    +items.map(i=>'<tr><td><b>'+esc(i.name)+'</b></td><td>'+esc(i.shop)+'</td>'
+      +'<td><span class="tag tw">'+i.dates.length+'</span></td>'
+      +'<td style="font-size:12px">'+schDatesLabel(i.dates)+'</td></tr>').join('')
+    +'</table></div></div>';
 }
 
 // ── ИНТЕГРАЦИЯ С ВВОДОМ ПРОДАЖ ────────────────────────────────────
