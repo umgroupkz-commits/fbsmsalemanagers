@@ -220,8 +220,31 @@ async function callEdgeFn(action,data={},attempt=1){
       await delay(800*attempt);
       return callEdgeFn(action,data,attempt+1);
     }
-    throw new Error('Сервер не отвечает. Попробуйте обновить страницу. ('+e.message+')');
+    // Раньше ошибка просто улетала наверх, а её никто не ловил: оверлей
+    // «Загрузка» оставался висеть навсегда, и человек не понимал,
+    // сохранились данные или нет. Гасим оверлей и показываем причину.
+    L(false);
+    const msg='Сервер не отвечает. Данные не сохранены — попробуйте ещё раз или обновите страницу.';
+    showFatal(msg+' ('+e.message+')');
+    throw new Error(msg);
   }
+}
+
+// Единая плашка об ошибке поверх интерфейса. Сама гаснет через 8 секунд.
+function showFatal(text){
+  let box=document.getElementById('fatal');
+  if(!box){
+    box=document.createElement('div');
+    box.id='fatal';
+    box.style.cssText='position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:1000;'
+      +'max-width:520px;background:var(--rl);color:var(--red);border:1px solid var(--red);'
+      +'border-radius:var(--r);padding:12px 16px;font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.15)';
+    document.body.appendChild(box);
+  }
+  box.textContent=text;
+  box.style.display='block';
+  clearTimeout(box._t);
+  box._t=setTimeout(()=>{box.style.display='none'},8000);
 }
 async function api(action,data={}){ return callEdgeFn(action,data); }
 async function apiPost(action,data={}){ return callEdgeFn(action,data); }
@@ -236,7 +259,46 @@ function fmtUpdatedAt(iso){
     return 'Данные обновлены: '+d.toLocaleDateString('ru-RU')+' '+d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
   }catch(e){return '';}
 }
-function today(){return new Date().toISOString().slice(0,10)}
+// Дата по МЕСТНОМУ времени. Через toISOString() было бы UTC, а Казахстан
+// UTC+5 — с полуночи до 5 утра функция возвращала вчерашний день, и ночная
+// смена записывалась не в те сутки.
+function today(){
+  const n=new Date();
+  return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');
+}
+// Экранирование пользовательских данных перед вставкой в innerHTML.
+// Имена сотрудников заводит управляющий — без этого имя вида
+// <img src=x onerror=...> выполнялось бы у всех, кто открыл страницу.
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// JSON внутрь HTML-атрибута onclick='...'. Апостроф в фамилии (О'Нил)
+// иначе разрывает атрибут и кнопка перестаёт работать.
+const escAttr=o=>esc(JSON.stringify(o));
+
+// Проверка ввода продаж. Раньше не было никакой: проходили отрицательные
+// суммы (портили факт магазина и премию всей смене), экспонента 1e12,
+// дробные тенге и даты из прошлого века.
+const MAX_DAY_SALES=50000000;   // потолок дневной выручки одного продавца
+function validateEntry({date,sales,checks,units,returns}){
+  if(!date)return'Выберите дату';
+  const d=new Date(date+'T00:00:00');
+  if(isNaN(d))return'Некорректная дата';
+  const now=new Date(today()+'T00:00:00');
+  if(d>now)return'Дата в будущем — так нельзя';
+  const limit=new Date(now); limit.setMonth(limit.getMonth()-3);
+  if(d<limit)return'Дата старше трёх месяцев. Обратитесь к управляющему';
+  const nums={'Сумма продаж':sales,'Чеки':checks,'Единицы':units,'Возврат':returns};
+  for(const k in nums){
+    const v=nums[k];
+    if(!isFinite(v))return k+': не число';
+    if(v<0)return k+': отрицательное значение';
+    if(v>MAX_DAY_SALES)return k+': слишком большое значение';
+  }
+  if(!Number.isInteger(checks)||!Number.isInteger(units))return'Чеки и единицы — целые числа';
+  if(checks===0&&sales>0)return'Указана выручка, но ноль чеков';
+  if(sales===0&&checks>0)return'Указаны чеки, но нулевая выручка';
+  return null;
+}
 function curMk(){
   const n=new Date();
   return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0');
@@ -269,6 +331,17 @@ function motiv(p){
 
 // Базовые параметры сетки продавца (использовались как магические числа
 // в старом коде — теперь одно место истины, аналогично MGR_DEFAULTS ниже).
+// Подписи ролей — одно место истины вместо четырёх копий карты.
+const ROLE_LABELS={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+// Итоги по записям продаж за период. Этот подсчёт был скопирован дословно
+// в шести местах: дашборд, история, история продавцов, рейтинг, сводка,
+// начисление. Правка в одном из них разъехалась бы с остальными.
+// net — выручка за вычетом возвратов, не ниже нуля.
+function sumEntries(ents){
+  let sales=0,checks=0,units=0,returns=0;
+  (ents||[]).forEach(e=>{sales+=+e.sales;checks+=+e.checks;units+=+e.units;returns+=+(e.returns||0)});
+  return {sales,checks,units,returns,net:Math.max(0,sales-returns)};
+}
 const SELLER_DEFAULTS={rate:6000,shifts:15,base:0.01,p80:0.005,p100:0.015,p140:0.03,bMag:10000,bKpi:10000,avgNorm:15000,uptNorm:2.5};
 
 // Общее ядро расчёта ЗП — "лестница" бонусов 80/100/140% и KPI,
@@ -374,7 +447,10 @@ function getEntriesFor(uid,mk){
 // две строки были продублированы в трёх разных местах.
 function getVisibleSellers(){
   let sellers=USERS.filter(u=>u.role==='seller');
-  if(CU.role==='manager') sellers=sellers.filter(u=>u.shop===CU.shop);
+  // Ограничиваем магазином и продавца тоже. Сегодня он на эти страницы не
+  // попадает, но раньше фильтр стоял только для управляющего — стоило бы
+  // добавить продавцу любую страницу со списком, и утекла бы вся сеть.
+  if(CU.role==='manager'||CU.role==='seller') sellers=sellers.filter(u=>u.shop===CU.shop);
   return sellers;
 }
 
@@ -405,7 +481,7 @@ async function init(){
     const sel=document.getElementById('lname');
     sel.innerHTML='<option value="">— выберите —</option>';
     [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{
-      sel.innerHTML+=`<option value="${u.id}">${u.name}</option>`;
+      sel.innerHTML+=`<option value="${u.id}">${esc(u.name)}</option>`;
     });
   }catch(e){
     document.getElementById('loader').innerHTML=`<div style="text-align:center;color:var(--red)"><b>Ошибка подключения</b><br><small>${e.message}</small></div>`;
@@ -434,6 +510,7 @@ window.doLogin=async function(){
   document.getElementById('sb-shop').textContent=CU.shop||'Администратор';
   L(true);
   [_plans,PARAMS]=await Promise.all([api('getPlans',{}),api('getParams')]);
+  await loadClosed(true);   // какие месяцы уже закрыты бухгалтером
   _sales=[]; // подгружается отдельно на каждой странице, отфильтровано по месяцу
   L(false);
   setupSidebar();showScreen('app');
@@ -483,8 +560,7 @@ window.pgDash=async function(){
   L(false);
   const plan=getPlan(CU.id,mk);
   const entries=getEntriesFor(CU.id,mk);
-  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-  ts=Math.max(0,ts-tr);
+  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
   // Дней с продажами, взвешенных по типу смены из графика (полсмены = 0.5)
   const actualShifts=schShifts(CU.id,entries);
   const pct=plan>0?ts/plan:0;
@@ -614,12 +690,12 @@ window.pgEnter=function(){
     <div class="ct">Добавить / изменить продажи</div>
     <div id="emsg"></div>
     <div class="fg"><label class="fl">Дата</label><input type="date" id="ed" class="fc" value="${today()}"></div>
-    <div class="fg"><label class="fl">Сумма продаж (₸)</label><input type="number" id="es" class="fc" placeholder="0"></div>
+    <div class="fg"><label class="fl">Сумма продаж (₸)</label><input type="number" id="es" class="fc" min="0" step="1" placeholder="0"></div>
     <div class="fr">
-      <div class="fg"><label class="fl">Чеков</label><input type="number" id="ec" class="fc" placeholder="0"></div>
-      <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="eu" class="fc" placeholder="0"></div>
+      <div class="fg"><label class="fl">Чеков</label><input type="number" id="ec" class="fc" min="0" step="1" placeholder="0"></div>
+      <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="eu" class="fc" min="0" step="1" placeholder="0"></div>
     </div>
-    <div class="fg" style="margin-top:4px"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" placeholder="0"></div>
+    <div class="fg" style="margin-top:4px"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" min="0" step="1" placeholder="0"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn bp" onclick="saveEntry()">Сохранить</button>
       <button class="btn" onclick="loadForEdit()">Редактировать запись за дату</button>
@@ -669,12 +745,21 @@ window.saveEntry=async function(){
   const sales=parseFloat(document.getElementById('es').value)||0;
   const checks=parseInt(document.getElementById('ec').value)||0;
   const units=parseInt(document.getElementById('eu').value)||0;
-  if(!date){alert('Выберите дату');return}
+  const returns=parseFloat(document.getElementById('er')?.value)||0;
+  const shut=closedGuard(date);
+  if(shut){sayClosed(shut,'emsg');return}
+  const bad=validateEntry({date,sales,checks,units,returns});
+  if(bad){
+    const m=document.getElementById('emsg');
+    if(m){m.style.cssText='';m.className='alert ae';m.textContent='⛔ '+bad}else alert(bad);
+    return;
+  }
   // ГРАФИК: не даём вводить продажи, пока график на месяц не заполнен
   L(true);
   const schSt=await schGuard(CU.shop);
   if(schSt.st==='block'){L(false);schSayGuard(schSt,false);return}
-  await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns:parseFloat(document.getElementById('er')?.value)||0});
+  await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns});
+  logAction('saveSale',CU.name,date,{sales,checks,units,returns});
   // ГРАФИК: помечаем факт смены. Ошибка здесь не должна ломать сохранение продаж.
   schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
   _sales=await api('getSales',{uid:CU.id});
@@ -713,8 +798,7 @@ window.loadHist=async function(){
   L(false);
   const entries=getEntriesFor(CU.id,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
   const plan=getPlan(CU.id,mk);
-  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-  ts=Math.max(0,ts-tr);
+  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
   const pct=plan>0?ts/plan:0;
   let html='';
   if(!entries.length){
@@ -749,6 +833,8 @@ window.editEntry=function(date){
 }
 
 window.delEntry=async function(date){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
   if(!confirm(`Удалить запись за ${date}?`))return;
   L(true);await apiPost('deleteSale',{uid:CU.id,date});L(false);
   await loadHist();
@@ -767,7 +853,7 @@ window.pgSellerHist=async function(){
       <div class="ct" style="margin:0">История продавца</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <select id="sh-uid" class="fc" style="width:auto" onchange="loadSellerHist()">
-          ${sellers.map(u=>`<option value="${u.id}">${u.name} (${u.shop})</option>`).join('')}
+          ${sellers.map(u=>`<option value="${u.id}">${esc(u.name)} (${esc(u.shop)})</option>`).join('')}
         </select>
         <select id="sh-mk" class="fc" style="width:auto" onchange="loadSellerHist()">${monthsOpts(6)}</select>
       </div>
@@ -786,8 +872,7 @@ window.loadSellerHist=async function(){
   L(false);
   const entries=getEntriesFor(uid,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
   const plan=getPlan(uid,mk);
-  let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-  ts=Math.max(0,ts-tr);
+  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
   const pct=plan>0?ts/plan:0;
   let html='';
   if(!entries.length){
@@ -842,8 +927,7 @@ window.loadRating=async function(){
   const sellers=USERS.filter(u=>u.role==='seller');
   const rows=sellers.map(u=>{
     const entries=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0,tr=0;entries.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-    ts=Math.max(0,ts-tr);
+    const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
     const avg=tc>0?ts/tc:0;
     const upt=tc>0?tu/tc:0;
     const plan=getPlan(u.id,mk);
@@ -859,7 +943,7 @@ window.loadRating=async function(){
     const trStyle=r.isMe?"style='background:var(--bl)'":''
     html+=`<tr ${trStyle}>
       <td><b>${i+1}</b></td>
-      <td>${r.name}${r.isMe?" <span class='tag ti'>Вы</span>":""}</td>
+      <td>${esc(r.name)}${r.isMe?" <span class='tag ti'>Вы</span>":""}</td>
       <td>${r.shop}</td>
       <td><b>${fmt(r.ts)}</b></td>
       <td>${r.avg>0?fmt(r.avg):"—"}</td>
@@ -895,8 +979,7 @@ window.loadReport=async function(forceRefresh){
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0,tr=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-    ts=Math.max(0,ts-tr);
+    const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(ents);
     const actualShifts=schShifts(u.id,ents);
     const plan=getPlan(u.id,mk);
     const pct=plan>0?ts/plan:0;
@@ -935,7 +1018,7 @@ window.loadReport=async function(forceRefresh){
       shopTotal+=r.ts;
       const avg=r.tc>0?r.ts/r.tc:0;const upt=r.tc>0?r.tu/r.tc:0;
       html+=`<tr>
-        <td>${r.name}</td><td>${fmt(r.ts)}</td><td>${r.plan?fmt(r.plan):'—'}</td>
+        <td>${esc(r.name)}</td><td>${fmt(r.ts)}</td><td>${r.plan?fmt(r.plan):'—'}</td>
         <td style="color:${barCol(r.pct)};font-weight:700">${Math.round(r.pct*100)}%</td>
         <td>${fmtSh(r.actualShifts)}</td>
         <td>${avg>0?fmt(avg):'—'}</td><td>${upt>0?upt.toFixed(2):'—'}</td>
@@ -958,8 +1041,10 @@ window.pgPayroll=async function(){
     +'<button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>'
     +'<span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>'
     +'<button class="btn bsm" onclick="exportPayrollExcel()" title="Экспорт всех начислений в Excel">📊 Экспорт в Excel</button>'
+    +'<span id="payClosed"></span>'
     +'<span style="font-size:13px;color:var(--muted)">✏️ — правка по дням · 💵 — корректировка перед начислением · 🖨️ — квиток</span>'
     +'</div><div id="payBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>');
+  await loadClosed(true);
   await loadPayroll();
 }
 
@@ -967,6 +1052,15 @@ window._payrollRows=[]; // хранится для экспорта в Excel
 
 window.loadPayroll=async function(forceRefresh){
   const mk=document.getElementById('payMk').value;
+  // Плашка «месяц закрыт» + кнопка. Закрывать может бухгалтер и админ —
+  // те же, кто видит начисление целиком.
+  const cw=document.getElementById('payClosed');
+  if(cw){
+    const shut=isClosed(mk), may=CU.role==='accountant'||CU.role==='admin';
+    cw.innerHTML=(shut?'<span class="tag td" style="margin-right:8px">🔒 Месяц закрыт</span>':'')
+      +(may?'<button class="btn bsm" onclick="toggleMonthClosed(\''+mk+'\')">'
+        +(shut?'Открыть месяц':'🔒 Закрыть месяц')+'</button>':'');
+  }
   L(true);
   const bundle=await api('getBundle',{mk,needShopStats:1,needMgrParams:1,needAdjustments:1,forceRefresh:forceRefresh?1:0});
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
@@ -988,8 +1082,7 @@ window.loadPayroll=async function(forceRefresh){
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
-    let ts=0,tc=0,tu=0,tr=0;ents.forEach(e=>{ts+=+e.sales;tc+=+e.checks;tu+=+e.units;tr+=+(e.returns||0)});
-    ts=Math.max(0,ts-tr);
+    const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(ents);
     const actualShifts=schShifts(u.id,ents);
     const plan=getPlan(u.id,mk);
     const ss=(window._shopStats||{})[u.shop]||{plan:0,fact:0,pct:0};
@@ -1037,7 +1130,7 @@ window.loadPayroll=async function(forceRefresh){
         vMag:z.bMag,vKpi1:z.bk1,vKpi2:z.bk2
       });
       html+='<tr'+(hasCorrection?' style="background:var(--al)"':'')+'>'
-        +'<td><b>'+r.name+'</b>'+(hasCorrection?' <span class="tag tw" title="Сумма продаж скорректирована">✎</span>':'')+'</td>'
+        +'<td><b>'+esc(r.name)+'</b>'+(hasCorrection?' <span class="tag tw" title="Сумма продаж скорректирована">✎</span>':'')+'</td>'
         +'<td>'+fmt(z.salesForTiers)+'</td>'
         +'<td style="color:'+barCol(z.pctUsed)+';font-weight:700">'+Math.round(z.pctUsed*100)+'%</td>'
         +'<td>'+fmtSh(r.actualShifts)+'</td>'
@@ -1047,9 +1140,9 @@ window.loadPayroll=async function(forceRefresh){
         +'<td style="color:var(--red)">'+(deductions>0?'−'+fmt(deductions):'—')+'</td>'
         +'<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(r.payout)+'</td>'
         +'<td style="white-space:nowrap">'
-        +'<button class="btn bsm" onclick=\'openEdit('+JSON.stringify({uid:r.id,name:r.name,mk,ents:r.ents})+')\'>✏️</button>'
-        +'<button class="btn bsm" onclick=\'openAdjust('+JSON.stringify({uid:r.id,name:r.name,mk,realSales:r.ts,role:"seller"})+')\'>💵</button>'
-        +'<button class="btn bsm" onclick=\'openSlip('+JSON.stringify({uid:r.id,name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,actualShifts:r.actualShifts,shopMet:r.shopMet,role:"seller"})+')\'>🖨️</button>'
+        +'<button class="btn bsm" onclick=\'openEdit('+escAttr({uid:r.id,name:r.name,mk,ents:r.ents})+')\'>✏️</button>'
+        +'<button class="btn bsm" onclick=\'openAdjust('+escAttr({uid:r.id,name:r.name,mk,realSales:r.ts,role:"seller"})+')\'>💵</button>'
+        +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:r.id,name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,actualShifts:r.actualShifts,shopMet:r.shopMet,role:"seller"})+')\'>🖨️</button>'
         +'</td></tr>';
     });
     html+='</table></div>'
@@ -1070,7 +1163,7 @@ window.loadPayroll=async function(forceRefresh){
       let mtc=0,mtu=0;
       sellerIds.forEach(sid=>{getEntriesFor(sid,mk).forEach(e=>{mtc+=+e.checks;mtu+=+e.units;});});
       const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,fines:0};
-      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,22);
+      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,mgrShifts());
       const comm2=z2.base+z2.a80+z2.a100+z2.a140;
       const mdeductions=(+adj.advance||0)+(+adj.pension||0)+(+adj.fines||0);
       const mpayout=z2.total-mdeductions;
@@ -1078,7 +1171,7 @@ window.loadPayroll=async function(forceRefresh){
       const MP=MGR_PARAMS,MD=MGR_DEFAULTS;
       window._payrollRows.push({
         kind:'manager',
-        name:m.name,role:'Управляющий',shop:m.shop,shifts:22,
+        name:m.name,role:'Управляющий',shop:m.shop,shifts:mgrShifts(),
         oklad:z2.oklad,pct:comm2,bonus:z2.bk1+z2.bk2,
         advance:+adj.advance||0,pension:+adj.pension||0,fines:+adj.fines||0,
         total:z2.total,payout:mpayout,
@@ -1097,18 +1190,18 @@ window.loadPayroll=async function(forceRefresh){
         vKpi1:z2.bk1,vKpi2:z2.bk2
       });
       mgrHtml+='<tr'+(hasCorr?' style="background:var(--al)"':'')+'>';
-      mgrHtml+='<td><b>'+m.name+'</b>'+(hasCorr?' <span class="tag tw">✎</span>':'')+'</td><td>'+m.shop+'</td>';
+      mgrHtml+='<td><b>'+esc(m.name)+'</b>'+(hasCorr?' <span class="tag tw">✎</span>':'')+'</td><td>'+esc(m.shop)+'</td>';
       mgrHtml+='<td>'+fmt(z2.factForTiers)+'</td>';
       mgrHtml+='<td style="color:'+barCol(z2.pctUsed)+';font-weight:700">'+Math.round(z2.pctUsed*100)+'%</td>';
-      mgrHtml+='<td>22</td>';
+      mgrHtml+='<td>'+fmtSh(mgrShifts())+'</td>';
       mgrHtml+='<td>'+fmt(z2.oklad)+'</td>';
       mgrHtml+='<td>'+fmt(comm2)+'</td>';
       mgrHtml+='<td>'+fmt(z2.bk1+z2.bk2)+'</td>';
       mgrHtml+='<td style="color:var(--red)">'+(mdeductions>0?'−'+fmt(mdeductions):'—')+'</td>';
       mgrHtml+='<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(mpayout)+'</td>';
       mgrHtml+='<td style="white-space:nowrap">'
-        +'<button class="btn bsm" onclick=\'openAdjust('+JSON.stringify({uid:m.id,name:m.name,mk,realSales:ss2.fact,role:"manager"})+')\'>💵</button>'
-        +'<button class="btn bsm" onclick=\'openSlip('+JSON.stringify({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:22,role:"manager"})+')\'>🖨️</button>'
+        +'<button class="btn bsm" onclick=\'openAdjust('+escAttr({uid:m.id,name:m.name,mk,realSales:ss2.fact,role:"manager"})+')\'>💵</button>'
+        +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:mgrShifts(),role:"manager"})+')\'>🖨️</button>'
         +'</td>';
       mgrHtml+='</tr>';
     });
@@ -1200,7 +1293,7 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
     +'<div style="font-size:13px;color:var(--muted)">Расчётный лист за '+mkLbl+'</div></div>'
     +correctionNote
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem;font-size:13px">'
-    +'<div><span style="color:var(--muted)">Сотрудник:</span> <b>'+name+'</b></div>'
+    +'<div><span style="color:var(--muted)">Сотрудник:</span> <b>'+esc(name)+'</b></div>'
     +'<div><span style="color:var(--muted)">Магазин:</span> <b>'+shop+'</b></div>'
     +'<div><span style="color:var(--muted)">Период:</span> <b>'+mkLbl+'</b></div>'
     +'<div><span style="color:var(--muted)">Смен отработано:</span> <b>'+fmtSh(actualShifts)+'</b></div>'
@@ -1231,7 +1324,7 @@ window.openAdjust=async function({uid,name,mk,realSales,role}){
   const ov=document.createElement('div');ov.className='ov';
   ov.innerHTML='<div class="ovc" style="max-width:460px">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
-    +'<b>Корректировка: '+name+'</b>'
+    +'<b>Корректировка: '+esc(name)+'</b>'
     +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button></div>'
     +'<div class="alert ai" style="display:block;font-size:12px">Реальная сумма продаж: <b>'+fmt(realSales)+'</b>. '
     +'Скорректированная сумма влияет только на % и бонусы по плану — KPI (ср.чек/UPT) не меняются.</div>'
@@ -1247,12 +1340,15 @@ window.openAdjust=async function({uid,name,mk,realSales,role}){
 }
 
 window.saveAdjustClick=async function(uid,mk,btn){
+  const shut=closedGuard(mk);
+  if(shut){alert('🔒 '+shut);return}
   const cs=document.getElementById('adj-sales').value;
   const advance=parseFloat(document.getElementById('adj-advance').value)||0;
   const pension=parseFloat(document.getElementById('adj-pension').value)||0;
   const fines=parseFloat(document.getElementById('adj-fines').value)||0;
   L(true);
   await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
+  logAction('saveAdjustment',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
   L(false);
   const msg=btn.parentElement.querySelector('#adj-msg');
   msg.textContent='✓ Сохранено';msg.style.color='var(--green)';
@@ -1288,6 +1384,8 @@ window.openEdit=function({uid,name,mk,ents}){
 }
 
 window.admDelRow=async function(uid,date,btn){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
   if(!confirm(`Удалить ${date}?`))return;
   L(true);await apiPost('deleteSale',{uid,date});L(false);
   btn.closest('tr').remove();loadPayroll();
@@ -1301,10 +1399,14 @@ window.admSaveAll=async function(uid,btn){
     if(!byDate[d])byDate[d]={uid,date:d,sales:0,checks:0,units:0};
     byDate[d][inp.dataset.f]=parseFloat(inp.value)||0;
   });
+  const dates=Object.keys(byDate);
+  const shut=dates.map(closedGuard).find(Boolean);
+  if(shut){alert('🔒 '+shut);return}
   L(true);
   const schU=USERS.find(x=>String(x.id)===String(uid));
   for(const data of Object.values(byDate)){
     await apiPost('saveSale',data);
+    logAction('saveSale',schU?schU.name:uid,data.date,{sales:data.sales,checks:data.checks,units:data.units});
     // ГРАФИК: помечаем факт смены и при вводе продаж управляющим/админом
     schMarkActual(uid,data.date,schU?schU.shop:null).catch(e=>console.warn('График:',e));
   }
@@ -1352,7 +1454,7 @@ window.renderDeletedUsers=async function(){
   const el=document.getElementById('dlist');
   if(!el) return;
   const deleted=await api('getDeletedUsers',{});
-  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+  const rm=ROLE_LABELS;
   if(deleted.length===0){
     el.innerHTML='<div style="color:var(--muted);font-size:13px">Нет удалённых сотрудников</div>';
     return;
@@ -1360,11 +1462,11 @@ window.renderDeletedUsers=async function(){
   el.innerHTML=`<div class="tw-wrap"><table>
     <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th>Удалён</th><th></th></tr>
     ${deleted.map(u=>`<tr>
-      <td>${u.name}</td><td>${u.shop||'—'}</td><td>${rm[u.role]||u.role}</td>
+      <td>${esc(u.name)}</td><td>${esc(u.shop)||'—'}</td><td>${rm[u.role]||esc(u.role)}</td>
       <td style="font-size:12px;color:var(--muted)">${u.deleted_at?new Date(u.deleted_at).toLocaleDateString('ru-RU'):'—'}</td>
       <td style="white-space:nowrap">
         <button class="btn bsm bp" onclick="restoreUserClick('${u.id}')">♻️ Восстановить</button>
-        <button class="btn bsm bd2" onclick="hardDeleteClick('${u.id}','${u.name}')">🗑️ Удалить навсегда</button>
+        <button class="btn bsm bd2" onclick="hardDeleteClick('${u.id}','${esc(u.name)}')">🗑️ Удалить навсегда</button>
       </td>
     </tr>`).join('')}
   </table></div>`;
@@ -1376,7 +1478,7 @@ window.restoreUserClick=async function(id){
   USERS=await api('getUsers');
   const sel=document.getElementById('lname');
   if(sel){sel.innerHTML='<option value="">— выберите —</option>';
-    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${u.name}</option>`});}
+    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${esc(u.name)}</option>`});}
   L(false);
   renderSellers();
   renderDeletedUsers();
@@ -1399,14 +1501,14 @@ window.hardDeleteClick=async function(id,name){
 function renderSellers(){
   let users=CU.role==='admin'?USERS:USERS.filter(u=>u.shop===CU.shop);
   users=[...users].sort((a,b)=>a.name.localeCompare(b.name));
-  const rm={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+  const rm=ROLE_LABELS;
   document.getElementById('slist').innerHTML=`<div class="tw-wrap"><table>
     <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th></th></tr>
     ${users.map(u=>{
       // manager can only edit/delete sellers from their shop
       const canEdit = CU.role==='admin' || (CU.role==='manager' && u.role==='seller' && u.shop===CU.shop);
       return `<tr>
-        <td>${u.name}</td><td>${u.shop||'—'}</td><td>${rm[u.role]||u.role}</td>
+        <td>${esc(u.name)}</td><td>${esc(u.shop)||'—'}</td><td>${rm[u.role]||esc(u.role)}</td>
         <td style="white-space:nowrap">
           ${canEdit?`<button class="btn bsm" onclick="openEditUser('${u.id}')">✏️</button>
           <button class="btn bsm bd2" onclick="removeSeller('${u.id}')">Удалить</button>`:''}
@@ -1425,7 +1527,7 @@ window.openEditUser=function(id){
       <b>Редактировать сотрудника</b>
       <button class="btn bsm" onclick="this.closest('.ov').remove()">✕</button>
     </div>
-    <div class="fg"><label class="fl">ФИО</label><input type="text" id="eu-name" class="fc" value="${u.name}"></div>
+    <div class="fg"><label class="fl">ФИО</label><input type="text" id="eu-name" class="fc" value="${esc(u.name)}"></div>
     <div class="fr">
       <div class="fg"><label class="fl">Магазин</label>
         <select id="eu-shop" class="fc">${shops.map(s=>`<option ${s===u.shop?'selected':''}>${s}</option>`).join('')}</select>
@@ -1460,7 +1562,7 @@ window.saveEditUser=async function(id){
   // refresh login select
   const sel=document.getElementById('lname');
   if(sel){sel.innerHTML='<option value="">— выберите —</option>';
-    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${u.name}</option>`});}
+    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${esc(u.name)}</option>`});}
   L(false);
   document.querySelector('.ov').remove();
   renderSellers();
@@ -1477,7 +1579,7 @@ window.addSeller=async function(){
   USERS=await api('getUsers');
   const sel=document.getElementById('lname');
   if(sel){sel.innerHTML='<option value="">— выберите —</option>';
-    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${u.name}</option>`});}
+    [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${esc(u.name)}</option>`});}
   L(false);
   document.getElementById('nn').value='';document.getElementById('np').value='';
   const m=document.getElementById('addMsg');m.className='alert as';m.textContent='✓ Сотрудник добавлен';
@@ -1501,7 +1603,7 @@ window.pgPlans=async function(){
     <div class="ct">Установить план — Продавец</div>
     <div class="fr">
       <div class="fg"><label class="fl">Продавец</label>
-        <select id="psel" class="fc">${sellers.map(u=>`<option value="${u.id}">${u.name} (${u.shop})</option>`).join('')}</select>
+        <select id="psel" class="fc">${sellers.map(u=>`<option value="${u.id}">${esc(u.name)} (${esc(u.shop)})</option>`).join('')}</select>
       </div>
       <div class="fg"><label class="fl">Месяц</label>
         <select id="pmk" class="fc">${monthsOpts(3,4)}</select>
@@ -1554,7 +1656,7 @@ function buildPlansTable(sellers){
   for(let i=-1;i<5;i++){const d=new Date(y,m+i,1);months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));}
   let html=`<table><tr><th>Продавец</th>${months.map(mk=>`<th>${mk}</th>`).join('')}</tr>`;
   sellers.forEach(u=>{
-    html+=`<tr><td>${u.name}</td>`;
+    html+=`<tr><td>${esc(u.name)}</td>`;
     months.forEach(mk=>{const p=getPlan(u.id,mk);html+=`<td style="font-size:12px">${p?fmtN(p):'—'}</td>`;});
     html+='</tr>';
   });
@@ -1565,7 +1667,10 @@ window.savePlan=async function(){
   const uid=document.getElementById('psel').value;
   const mk=document.getElementById('pmk').value;
   const amt=parseFloat(document.getElementById('pamt').value)||0;
+  const shut=closedGuard(mk);
+  if(shut){sayClosed(shut,'pmsg');return}
   L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
+  logAction('savePlan',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{amount:amt});
   const m=document.getElementById('pmsg');m.className='alert as';m.textContent='✓ План сохранён';
   document.getElementById('ptbl').innerHTML=buildPlansTable(USERS.filter(u=>u.role==='seller'));
   setTimeout(()=>m.textContent='',2000);
@@ -1576,6 +1681,8 @@ window.saveShopPlan=async function(){
   const mk=document.getElementById('shop-pmk').value;
   const amt=parseFloat(document.getElementById('shop-pamt').value)||0;
   const uid='shop_'+shop; // special uid for shop plans
+  const shut=closedGuard(mk);
+  if(shut){sayClosed(shut,'shop-pmsg');return}
   L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
   const m=document.getElementById('shop-pmsg');m.className='alert as';m.textContent='✓ План магазина сохранён';
   const tbl=document.getElementById('shop-ptbl');if(tbl)tbl.innerHTML=buildShopPlansTable();
@@ -1665,6 +1772,10 @@ window.pgOpenReport=function(){
 // УПРАВЛЯЮЩИЙ — ЗП и ранги
 // ════════════════════════════════════════
 const MGR_DEFAULTS={rate:30000,shifts:22,base:0.005,p80:0.0025,p100:0.0025,p140:0.005,bKpi:20000,avgNorm:15000,uptNorm:2.5};
+// Норма смен управляющего. Раньше в начислении стояло зашитое 22, а на
+// странице «Моя ЗП» — настраиваемый параметр: стоило поменять норму в
+// «Параметрах», и два экрана показали бы разные оклады.
+const mgrShifts=()=>parseFloat(MGR_PARAMS.shifts)||MGR_DEFAULTS.shifts;
 let MGR_PARAMS={...MGR_DEFAULTS};
 
 function getMgrRank(p){
@@ -1815,16 +1926,6 @@ window.calcMgrScen=function(){
   document.getElementById('mgr-scen-result').textContent='ЗП при '+Math.round(pctVal)+'%: '+fmt(z.total);
 };
 
-window.rMgr=function(inp,shopFact,pct){
-  var uid=inp.id.replace('mgr-s-','');
-  var shifts=parseInt(inp.value)||22;
-  var z=calcMgrZP(shopFact,0,0,pct,shifts);
-  var ge=function(id){return document.getElementById(id);};
-  if(ge('mo-'+uid))ge('mo-'+uid).textContent=fmt(z.oklad);
-  if(ge('mp-'+uid))ge('mp-'+uid).textContent=fmt(z.base+z.a80+z.a100+z.a140);
-  if(ge('mk-'+uid))ge('mk-'+uid).textContent=fmt(z.bk1+z.bk2);
-  if(ge('mt-'+uid))ge('mt-'+uid).textContent=fmt(z.total);
-};
 
 window.saveMgrParamsFn=async function(){
   var np={
@@ -2016,6 +2117,7 @@ window.exportPayrollExcel=function(){
 
   XLSX.writeFile(wb,'FBSM_Начисления_'+mk+'.xlsx');
 }
+
 // ══════════════════════════════════════════════════════════════════
 // МОДУЛЬ «ГРАФИК СМЕН»
 // ------------------------------------------------------------------
@@ -2216,7 +2318,7 @@ async function schRender(){
   });
   h+='<th class="sch-tot">План</th><th class="sch-tot">Факт</th></tr></thead><tbody>';
 
-  const rm={seller:'Продавец',manager:'Управляющий'};
+  const rm=ROLE_LABELS;
   // у кого в этом месяце вообще есть план — от этого зависит,
   // считать ли факт без плана выходом вне графика
   const hasPlan={};
@@ -2238,7 +2340,7 @@ async function schRender(){
       }
       row+=schCellHtml(u,dt,hasPlan[u.id]);
     });
-    h+='<tr><td class="sch-name"><b>'+u.name+'</b><div style="font-size:11px;color:var(--muted)">'
+    h+='<tr><td class="sch-name"><b>'+esc(u.name)+'</b><div style="font-size:11px;color:var(--muted)">'
       +(rm[u.role]||u.role)+'</div></td>'+row
       +'<td class="sch-tot">'+pc+'</td><td class="sch-tot">'+fc+'</td></tr>';
   });
@@ -2372,7 +2474,7 @@ window.schExportExcel=function(){
   for(let d=1;d<=nd;d++)days.push(_schMk+'-'+String(d).padStart(2,'0'));
   const [yy,mm]=_schMk.split('-');
   const title=new Date(+yy,+mm-1,1).toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
-  const rm={seller:'Продавец',manager:'Управляющий'};
+  const rm=ROLE_LABELS;
   const pts=schPointsForShop(_schShop);
   const wb=XLSX.utils.book_new();
 
@@ -2440,6 +2542,76 @@ window.schExportExcel=function(){
   XLSX.utils.book_append_sheet(wb,ws,'Свод');
 
   XLSX.writeFile(wb,'FBSM_Табель_'+_schShop+'_'+_schMk+'.xlsx');
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ЗАКРЫТИЕ МЕСЯЦА И ЖУРНАЛ ИЗМЕНЕНИЙ
+// ------------------------------------------------------------------
+// Закрытый месяц — тот, по которому зарплата уже выдана. Править в нём
+// продажи, планы и корректировки нельзя: начисление разъедется с тем,
+// что реально получили на руки.
+//
+// Проверка идёт на клиенте, как и всё остальное разграничение прав
+// в этой программе. От случайной правки защищает, от намеренной —
+// нет; это чинится только переносом проверок в Edge Function.
+// ══════════════════════════════════════════════════════════════════
+let _closed=null;   // Set из '2026-07'
+
+async function loadClosed(force){
+  if(_closed&&!force)return _closed;
+  try{
+    const r=await schFetch('/closed_months?select=mk');
+    _closed=new Set((r||[]).map(x=>x.mk));
+  }catch(e){ _closed=new Set(); }   // таблицы ещё нет — ничего не блокируем
+  return _closed;
+}
+function isClosed(mk){ return !!(_closed&&_closed.has(normMk(mk))); }
+
+// Единая проверка перед любой правкой. Возвращает текст ошибки или null.
+function closedGuard(mk){
+  return isClosed(mk)
+    ? 'Месяц '+normMk(mk)+' закрыт бухгалтером — зарплата по нему уже начислена. Правки запрещены.'
+    : null;
+}
+function sayClosed(msg,elId){
+  const m=elId?document.getElementById(elId):null;
+  if(m){m.style.cssText='';m.className='alert ae';m.textContent='🔒 '+msg}
+  else alert('🔒 '+msg);
+}
+
+// Журнал: пишем и забываем. Ошибка записи не должна ломать операцию —
+// иначе журнал станет причиной сбоев вместо страховки.
+function logAction(action,target,mk,details){
+  try{
+    schFetch('/audit_log',{method:'POST',body:JSON.stringify([{
+      who:CU?CU.name:null, who_role:CU?CU.role:null,
+      action, target:target||null, mk:mk?normMk(mk):null,
+      details:details||null
+    }])}).catch(()=>{});
+  }catch(e){}
+}
+
+window.toggleMonthClosed=async function(mk){
+  await loadClosed(true);
+  const closing=!isClosed(mk);
+  const q=closing
+    ? 'Закрыть '+mk+'?\n\nПосле этого продажи, планы и корректировки за этот месяц править будет нельзя.\nДелайте это после того, как зарплата выдана.'
+    : 'Открыть '+mk+' обратно?\n\nПравки снова станут возможны.';
+  if(!confirm(q))return;
+  L(true);
+  try{
+    if(closing){
+      await schFetch('/closed_months',{method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify([{mk,closed_by:CU.name}])});
+    }else{
+      await schFetch('/closed_months?mk=eq.'+encodeURIComponent(mk),{method:'DELETE'});
+    }
+    logAction(closing?'closeMonth':'reopenMonth',null,mk,null);
+    await loadClosed(true);
+  }catch(e){L(false);alert('Не удалось: '+e.message+'\n\nВозможно, не выполнен скрипт 03_closed_months_audit.sql');return}
+  L(false);
+  loadPayroll();
 }
 
 // ── ИНТЕГРАЦИЯ С ВВОДОМ ПРОДАЖ ────────────────────────────────────
