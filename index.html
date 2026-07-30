@@ -1116,9 +1116,10 @@ window.loadPayroll=async function(forceRefresh){
     const plan=getPlan(u.id,mk);
     const ss=(window._shopStats||{})[u.shop]||{plan:0,fact:0,pct:0};
     const shopMet=ss.plan>0&&ss.fact>=ss.plan;
-    const adj=adjMap[u.id]||{corrected_sales:null,advance:0,pension:0,fines:0};
+    const adj=adjMap[u.id]||{corrected_sales:null,advance:0,pension:0,fines:0,bonus:0,bonus_note:null};
     const zp=calcZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,shopMet);
-    const payout=zp.total-(+adj.advance||0)-(+adj.pension||0)-(+adj.fines||0);
+    // Премия, в отличие от штрафов, прибавляется к выплате.
+    const payout=zp.total-(+adj.advance||0)-(+adj.pension||0)-(+adj.fines||0)+(+adj.bonus||0);
     byShop[u.shop].push({...u,ts,tc,tu,plan,zp,actualShifts,ents,shopMet,adj,payout});
   });
 
@@ -1133,6 +1134,7 @@ window.loadPayroll=async function(forceRefresh){
       const commision=z.base+z.a80+z.a100+z.a140;
       const bonus=z.bMag+z.bk1+z.bk2;
       const deductions=(+r.adj.advance||0)+(+r.adj.pension||0)+(+r.adj.fines||0);
+      const extraBonus=+r.adj.bonus||0;
       shopZP+=r.payout;grand+=r.payout;
       const hasCorrection=r.adj.corrected_sales!==null&&r.adj.corrected_sales!==undefined;
       const P=PARAMS,SD=SELLER_DEFAULTS;
@@ -1141,6 +1143,7 @@ window.loadPayroll=async function(forceRefresh){
         name:r.name,role:'Продавец',shop:r.shop,shifts:r.actualShifts,
         oklad:z.oklad,pct:commision,bonus:bonus,
         advance:+r.adj.advance||0,pension:+r.adj.pension||0,fines:+r.adj.fines||0,
+        extraBonus:+r.adj.bonus||0,bonusNote:r.adj.bonus_note||'',
         total:z.total,payout:r.payout,
         // ── исходные данные для формул в Excel ──
         sales:z.salesForTiers,realSales:r.ts,plan:r.plan,pctDone:z.pctUsed,
@@ -1191,11 +1194,12 @@ window.loadPayroll=async function(forceRefresh){
       const sellerIds=USERS.filter(u=>u.role==='seller'&&u.shop===m.shop).map(u=>u.id);
       let mtc=0,mtu=0;
       sellerIds.forEach(sid=>{getEntriesFor(sid,mk).forEach(e=>{mtc+=+e.checks;mtu+=+e.units;});});
-      const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,fines:0};
+      const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,fines:0,bonus:0,bonus_note:null};
       const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,mgrShifts());
       const comm2=z2.base+z2.a80+z2.a100+z2.a140;
       const mdeductions=(+adj.advance||0)+(+adj.pension||0)+(+adj.fines||0);
-      const mpayout=z2.total-mdeductions;
+      const mExtraBonus=+adj.bonus||0;
+      const mpayout=z2.total-mdeductions+mExtraBonus;
       const hasCorr=adj.corrected_sales!==null&&adj.corrected_sales!==undefined;
       const MP=MGR_PARAMS,MD=MGR_DEFAULTS;
       window._payrollRows.push({
@@ -1203,6 +1207,7 @@ window.loadPayroll=async function(forceRefresh){
         name:m.name,role:'Управляющий',shop:m.shop,shifts:mgrShifts(),
         oklad:z2.oklad,pct:comm2,bonus:z2.bk1+z2.bk2,
         advance:+adj.advance||0,pension:+adj.pension||0,fines:+adj.fines||0,
+        extraBonus:+adj.bonus||0,bonusNote:adj.bonus_note||'',
         total:z2.total,payout:mpayout,
         // ── исходные данные для формул в Excel ──
         sales:z2.factForTiers,realSales:ss2.fact,plan:ss2.plan,pctDone:z2.pctUsed,
@@ -1252,7 +1257,8 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
     ? calcMgrZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,p)
     : calcZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,shopMet,p);
   const advance=+adj.advance||0,pension=+adj.pension||0,fines=+adj.fines||0;
-  const payout=zp.total-advance-pension-fines;
+  const extraBonus=+adj.bonus||0,bonusNote=adj.bonus_note||'';
+  const payout=zp.total-advance-pension-fines+extraBonus;
   const avg=zp.avg,upt=zp.upt;
   const mkLbl=new Date(mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
 
@@ -1275,6 +1281,7 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
   rows+='<tr><td>Бонус KPI — средний чек ('+bKpiVal+')</td><td>+'+fmt(zp.bk1)+'</td></tr>';
   rows+='<tr><td>Бонус KPI — UPT ('+bKpiVal+')</td><td>+'+fmt(zp.bk2)+'</td></tr>';
   rows+='<tr style="background:var(--s2)"><td><b>Итого начислено</b></td><td><b>'+fmt(zp.total)+'</b></td></tr>';
+  if(extraBonus>0) rows+='<tr><td>Премия'+(bonusNote?' <span style="color:var(--muted);font-size:11px">('+esc(bonusNote)+')</span>':'')+'</td><td style="color:var(--green)">+'+fmt(extraBonus)+'</td></tr>';
   if(advance>0) rows+='<tr><td>Аванс</td><td style="color:var(--red)">−'+fmt(advance)+'</td></tr>';
   if(pension>0) rows+='<tr><td>Пенсионные отчисления</td><td style="color:var(--red)">−'+fmt(pension)+'</td></tr>';
   if(fines>0)   rows+='<tr><td>Штрафы</td><td style="color:var(--red)">−'+fmt(fines)+'</td></tr>';
@@ -1302,6 +1309,7 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
   waText+='Бонус KPI — средний чек ('+bKpiVal+'): +'+fmt(zp.bk1)+'\n';
   waText+='Бонус KPI — UPT ('+bKpiVal+'): +'+fmt(zp.bk2)+'\n';
   waText+='\nИтого начислено: '+fmt(zp.total)+'\n';
+  if(extraBonus>0) waText+='Премия'+(bonusNote?' ('+bonusNote+')':'')+': +'+fmt(extraBonus)+'\n';
   if(advance>0) waText+='Аванс: -'+fmt(advance)+'\n';
   if(pension>0) waText+='Пенсионные: -'+fmt(pension)+'\n';
   if(fines>0)   waText+='Штрафы: -'+fmt(fines)+'\n';
@@ -1362,6 +1370,11 @@ window.openAdjust=async function({uid,name,mk,realSales,role}){
     +'<div class="fg"><label class="fl">Аванс (₸)</label><input type="number" id="adj-advance" class="fc" value="'+(adj.advance||0)+'"></div>'
     +'<div class="fg"><label class="fl">Пенсионные отчисления (₸)</label><input type="number" id="adj-pension" class="fc" value="'+(adj.pension||0)+'"></div>'
     +'<div class="fg"><label class="fl">Штрафы (₸)</label><input type="number" id="adj-fines" class="fc" value="'+(adj.fines||0)+'"></div>'
+    +'<div style="border-top:1px dashed var(--border);margin:1rem 0 .75rem"></div>'
+    +'<div class="fg"><label class="fl">Премия (₸) <span style="color:var(--green);font-size:11px">— прибавится к выплате</span></label>'
+    +'<input type="number" id="adj-bonus" class="fc" min="0" value="'+(adj.bonus||0)+'"></div>'
+    +'<div class="fg"><label class="fl">Обоснование премии</label>'
+    +'<input type="text" id="adj-bonus-note" class="fc" placeholder="за что начислена" value="'+esc(adj.bonus_note||'')+'"></div>'
     +'<button class="btn bp" onclick="saveAdjustClick(\''+uid+'\',\''+mk+'\',this)">Сохранить</button>'
     +'<div id="adj-msg" style="margin-top:8px;font-size:13px"></div>'
     +'</div>';
@@ -1375,9 +1388,13 @@ window.saveAdjustClick=async function(uid,mk,btn){
   const advance=parseFloat(document.getElementById('adj-advance').value)||0;
   const pension=parseFloat(document.getElementById('adj-pension').value)||0;
   const fines=parseFloat(document.getElementById('adj-fines').value)||0;
+  const bonus=parseFloat(document.getElementById('adj-bonus').value)||0;
+  const bonusNote=document.getElementById('adj-bonus-note').value.trim();
+  if(bonus<0){alert('Премия не может быть отрицательной. Для удержания есть поле «Штрафы».');return}
+  if(bonus>0&&!bonusNote){alert('Укажите, за что премия');return}
   L(true);
-  await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
-  logAction('saveAdjustment',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
+  await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines,bonus,bonusNote});
+  logAction('saveAdjustment',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines,bonus,bonusNote});
   L(false);
   const msg=btn.parentElement.querySelector('#adj-msg');
   msg.textContent='✓ Сохранено';msg.style.color='var(--green)';
@@ -2009,7 +2026,7 @@ window.exportPayrollExcel=function(){
     'kBase','vBase','k80','v80','k100','v100','k140','v140','commTotal',
     'checks','units','avg','avgNorm','kpiRate','vKpi1','upt','uptNorm','vKpi2'];
   const KEYS_SHOP=['shopMet','bMagRate','vMag'];
-  const KEYS_TAIL=['bonusTotal','accrued','advance','pension','fines','payout'];
+  const KEYS_TAIL=['bonusTotal','accrued','extraBonus','bonusNote','advance','pension','fines','payout'];
   const FORMULA_KEYS=['pct','oklad','vBase','v80','v100','v140','commTotal',
     'avg','vKpi1','upt','vKpi2','vMag','bonusTotal','accrued','payout'];
   const HEAD={
@@ -2026,6 +2043,7 @@ window.exportPayrollExcel=function(){
     upt:'UPT',uptNorm:'Норма UPT',vKpi2:'ПРЕМИЯ за UPT',
     shopMet:'План магазина',bMagRate:'Ставка премии за магазин',vMag:'ПРЕМИЯ за план магазина',
     bonusTotal:'ИТОГО ПРЕМИИ',accrued:'НАЧИСЛЕНО',
+    extraBonus:'Разовая премия',bonusNote:'За что премия',
     advance:'Аванс',pension:'Пенсия',fines:'Штрафы',payout:'К ВЫПЛАТЕ'};
 
   const detail=(rows,sheet,isMgr)=>{
@@ -2063,15 +2081,15 @@ window.exportPayrollExcel=function(){
         xlF(ws,a('bonusTotal'),a('vKpi1')+'+'+a('vKpi2')+'+'+a('vMag'));
       }
       xlF(ws,a('accrued'),  a('oklad')+'+'+a('commTotal')+'+'+a('bonusTotal'));
-      xlF(ws,a('payout'),   a('accrued')+'-'+a('advance')+'-'+a('pension')+'-'+a('fines'));
-      ['realSales','sales','plan','rate','avgNorm','kpiRate','advance','pension','fines']
+      xlF(ws,a('payout'),   a('accrued')+'+'+a('extraBonus')+'-'+a('advance')+'-'+a('pension')+'-'+a('fines'));
+      ['realSales','sales','plan','rate','avgNorm','kpiRate','extraBonus','advance','pension','fines']
         .concat(isMgr?[]:['bMagRate']).forEach(k=>xlZ(ws,a(k),XL_MONEY));
       ['kBase','k80','k100','k140'].forEach(k=>xlZ(ws,a(k),XL_RATE));
     });
     const t=rows.length+R0;
     ws[C.name+t]={t:'s',v:'ИТОГО'};
     ['realSales','sales','plan','oklad','vBase','v80','v100','v140','commTotal',
-      'vKpi1','vKpi2','bonusTotal','accrued','advance','pension','fines','payout']
+      'vKpi1','vKpi2','bonusTotal','accrued','extraBonus','advance','pension','fines','payout']
       .concat(isMgr?[]:['vMag'])
       .forEach(k=>xlF(ws,C[k]+t,'SUM('+C[k]+R0+':'+C[k]+(t-1)+')'));
     xlF(ws,C.shifts+t,'SUM('+C.shifts+R0+':'+C.shifts+(t-1)+')','0.0');
@@ -2089,8 +2107,8 @@ window.exportPayrollExcel=function(){
   const ordered=sellers.concat(mgrs);
   const sv=[['СВОД НАЧИСЛЕНИЙ · '+mk],
     ['Каждое число — ссылка на лист расчёта. Правится там, здесь пересчитывается само.'],[],
-    ['Сотрудник','Роль','Магазин','Смен','Оклад','% от продаж','ПРЕМИИ','НАЧИСЛЕНО','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ']];
-  ordered.forEach(r=>sv.push([r.name,r.role,r.shop,null,null,null,null,null,null,null,null,null]));
+    ['Сотрудник','Роль','Магазин','Смен','Оклад','% от продаж','ПРЕМИИ','НАЧИСЛЕНО','Разовая премия','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ']];
+  ordered.forEach(r=>sv.push([r.name,r.role,r.shop,null,null,null,null,null,null,null,null,null,null]));
   const wsSv=XLSX.utils.aoa_to_sheet(sv);
   ordered.forEach((r,i)=>{
     const n=i+R0,isM=r.kind==='manager';
@@ -2103,18 +2121,19 @@ window.exportPayrollExcel=function(){
     xlF(wsSv,'F'+n,src+C.commTotal+k);
     xlF(wsSv,'G'+n,src+C.bonusTotal+k);
     xlF(wsSv,'H'+n,'E'+n+'+F'+n+'+G'+n);
-    xlF(wsSv,'I'+n,src+C.advance+k);
-    xlF(wsSv,'J'+n,src+C.pension+k);
-    xlF(wsSv,'K'+n,src+C.fines+k);
-    xlF(wsSv,'L'+n,'H'+n+'-I'+n+'-J'+n+'-K'+n);
+    xlF(wsSv,'I'+n,src+C.extraBonus+k);
+    xlF(wsSv,'J'+n,src+C.advance+k);
+    xlF(wsSv,'K'+n,src+C.pension+k);
+    xlF(wsSv,'L'+n,src+C.fines+k);
+    xlF(wsSv,'M'+n,'H'+n+'+I'+n+'-J'+n+'-K'+n+'-L'+n);
   });
   const tr=ordered.length+R0;
   wsSv['A'+tr]={t:'s',v:'ИТОГО'};
-  ['D','E','F','G','H','I','J','K','L'].forEach(c=>
+  ['D','E','F','G','H','I','J','K','L','M'].forEach(c=>
     xlF(wsSv,c+tr,'SUM('+c+R0+':'+c+(tr-1)+')',c==='D'?'0.0':XL_MONEY));
-  wsSv['!ref']='A1:L'+tr;
-  wsSv['!cols']=[{wch:26},{wch:14},{wch:15},{wch:8},{wch:13},{wch:14},{wch:13},{wch:14},{wch:12},{wch:12},{wch:12},{wch:15}];
-  wsSv['!merges']=[{s:{r:0,c:0},e:{r:0,c:11}},{s:{r:1,c:0},e:{r:1,c:11}}];
+  wsSv['!ref']='A1:M'+tr;
+  wsSv['!cols']=[{wch:26},{wch:14},{wch:15},{wch:8},{wch:13},{wch:14},{wch:13},{wch:14},{wch:15},{wch:12},{wch:12},{wch:12},{wch:15}];
+  wsSv['!merges']=[{s:{r:0,c:0},e:{r:0,c:12}},{s:{r:1,c:0},e:{r:1,c:12}}];
   XLSX.utils.book_append_sheet(wb,wsSv,'Свод');
 
   // ══ ПАРАМЕТРЫ ═════════════════════════════════════════════════

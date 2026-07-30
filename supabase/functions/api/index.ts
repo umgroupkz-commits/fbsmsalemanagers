@@ -478,7 +478,7 @@ async function getAdjustment(body: any) {
   const key = body.uid + "_" + body.mk;
   const { data, error } = await sb.from("adjustments").select("*").eq("key", key).maybeSingle();
   if (error) throw error;
-  return data || { uid: body.uid, mk: body.mk, corrected_sales: null, advance: 0, pension: 0, fines: 0 };
+  return data || { uid: body.uid, mk: body.mk, corrected_sales: null, advance: 0, pension: 0, fines: 0, bonus: 0, bonus_note: null };
 }
 async function getAdjustmentsForMonth(body: any) {
   const { data, error } = await sb.from("adjustments").select("*").eq("mk", body.mk);
@@ -493,6 +493,10 @@ async function saveAdjustment(body: any) {
     advance: body.advance || 0,
     pension: body.pension || 0,
     fines: body.fines || 0,
+    // Разовая премия — в отличие от штрафов, прибавляется к выплате.
+    // Обоснование обязательно к заполнению на стороне программы.
+    bonus: body.bonus || 0,
+    bonus_note: body.bonusNote || null,
   });
   if (error) throw error;
   return { ok: true };
