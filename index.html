@@ -510,6 +510,7 @@ window.doLogin=async function(){
   document.getElementById('sb-shop').textContent=CU.shop||'Администратор';
   L(true);
   [_plans,PARAMS]=await Promise.all([api('getPlans',{}),api('getParams')]);
+  await loadClosed(true);   // какие месяцы уже закрыты бухгалтером
   _sales=[]; // подгружается отдельно на каждой странице, отфильтровано по месяцу
   L(false);
   setupSidebar();showScreen('app');
@@ -745,6 +746,8 @@ window.saveEntry=async function(){
   const checks=parseInt(document.getElementById('ec').value)||0;
   const units=parseInt(document.getElementById('eu').value)||0;
   const returns=parseFloat(document.getElementById('er')?.value)||0;
+  const shut=closedGuard(date);
+  if(shut){sayClosed(shut,'emsg');return}
   const bad=validateEntry({date,sales,checks,units,returns});
   if(bad){
     const m=document.getElementById('emsg');
@@ -756,6 +759,7 @@ window.saveEntry=async function(){
   const schSt=await schGuard(CU.shop);
   if(schSt.st==='block'){L(false);schSayGuard(schSt,false);return}
   await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns});
+  logAction('saveSale',CU.name,date,{sales,checks,units,returns});
   // ГРАФИК: помечаем факт смены. Ошибка здесь не должна ломать сохранение продаж.
   schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
   _sales=await api('getSales',{uid:CU.id});
@@ -829,6 +833,8 @@ window.editEntry=function(date){
 }
 
 window.delEntry=async function(date){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
   if(!confirm(`Удалить запись за ${date}?`))return;
   L(true);await apiPost('deleteSale',{uid:CU.id,date});L(false);
   await loadHist();
@@ -1035,8 +1041,10 @@ window.pgPayroll=async function(){
     +'<button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>'
     +'<span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>'
     +'<button class="btn bsm" onclick="exportPayrollExcel()" title="Экспорт всех начислений в Excel">📊 Экспорт в Excel</button>'
+    +'<span id="payClosed"></span>'
     +'<span style="font-size:13px;color:var(--muted)">✏️ — правка по дням · 💵 — корректировка перед начислением · 🖨️ — квиток</span>'
     +'</div><div id="payBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>');
+  await loadClosed(true);
   await loadPayroll();
 }
 
@@ -1044,6 +1052,15 @@ window._payrollRows=[]; // хранится для экспорта в Excel
 
 window.loadPayroll=async function(forceRefresh){
   const mk=document.getElementById('payMk').value;
+  // Плашка «месяц закрыт» + кнопка. Закрывать может бухгалтер и админ —
+  // те же, кто видит начисление целиком.
+  const cw=document.getElementById('payClosed');
+  if(cw){
+    const shut=isClosed(mk), may=CU.role==='accountant'||CU.role==='admin';
+    cw.innerHTML=(shut?'<span class="tag td" style="margin-right:8px">🔒 Месяц закрыт</span>':'')
+      +(may?'<button class="btn bsm" onclick="toggleMonthClosed(\''+mk+'\')">'
+        +(shut?'Открыть месяц':'🔒 Закрыть месяц')+'</button>':'');
+  }
   L(true);
   const bundle=await api('getBundle',{mk,needShopStats:1,needMgrParams:1,needAdjustments:1,forceRefresh:forceRefresh?1:0});
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
@@ -1323,12 +1340,15 @@ window.openAdjust=async function({uid,name,mk,realSales,role}){
 }
 
 window.saveAdjustClick=async function(uid,mk,btn){
+  const shut=closedGuard(mk);
+  if(shut){alert('🔒 '+shut);return}
   const cs=document.getElementById('adj-sales').value;
   const advance=parseFloat(document.getElementById('adj-advance').value)||0;
   const pension=parseFloat(document.getElementById('adj-pension').value)||0;
   const fines=parseFloat(document.getElementById('adj-fines').value)||0;
   L(true);
   await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
+  logAction('saveAdjustment',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines});
   L(false);
   const msg=btn.parentElement.querySelector('#adj-msg');
   msg.textContent='✓ Сохранено';msg.style.color='var(--green)';
@@ -1364,6 +1384,8 @@ window.openEdit=function({uid,name,mk,ents}){
 }
 
 window.admDelRow=async function(uid,date,btn){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
   if(!confirm(`Удалить ${date}?`))return;
   L(true);await apiPost('deleteSale',{uid,date});L(false);
   btn.closest('tr').remove();loadPayroll();
@@ -1377,10 +1399,14 @@ window.admSaveAll=async function(uid,btn){
     if(!byDate[d])byDate[d]={uid,date:d,sales:0,checks:0,units:0};
     byDate[d][inp.dataset.f]=parseFloat(inp.value)||0;
   });
+  const dates=Object.keys(byDate);
+  const shut=dates.map(closedGuard).find(Boolean);
+  if(shut){alert('🔒 '+shut);return}
   L(true);
   const schU=USERS.find(x=>String(x.id)===String(uid));
   for(const data of Object.values(byDate)){
     await apiPost('saveSale',data);
+    logAction('saveSale',schU?schU.name:uid,data.date,{sales:data.sales,checks:data.checks,units:data.units});
     // ГРАФИК: помечаем факт смены и при вводе продаж управляющим/админом
     schMarkActual(uid,data.date,schU?schU.shop:null).catch(e=>console.warn('График:',e));
   }
@@ -1641,7 +1667,10 @@ window.savePlan=async function(){
   const uid=document.getElementById('psel').value;
   const mk=document.getElementById('pmk').value;
   const amt=parseFloat(document.getElementById('pamt').value)||0;
+  const shut=closedGuard(mk);
+  if(shut){sayClosed(shut,'pmsg');return}
   L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
+  logAction('savePlan',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{amount:amt});
   const m=document.getElementById('pmsg');m.className='alert as';m.textContent='✓ План сохранён';
   document.getElementById('ptbl').innerHTML=buildPlansTable(USERS.filter(u=>u.role==='seller'));
   setTimeout(()=>m.textContent='',2000);
@@ -1652,6 +1681,8 @@ window.saveShopPlan=async function(){
   const mk=document.getElementById('shop-pmk').value;
   const amt=parseFloat(document.getElementById('shop-pamt').value)||0;
   const uid='shop_'+shop; // special uid for shop plans
+  const shut=closedGuard(mk);
+  if(shut){sayClosed(shut,'shop-pmsg');return}
   L(true);await apiPost('savePlan',{uid,mk,amount:amt});_plans=await api('getPlans',{});L(false);
   const m=document.getElementById('shop-pmsg');m.className='alert as';m.textContent='✓ План магазина сохранён';
   const tbl=document.getElementById('shop-ptbl');if(tbl)tbl.innerHTML=buildShopPlansTable();
@@ -2511,6 +2542,76 @@ window.schExportExcel=function(){
   XLSX.utils.book_append_sheet(wb,ws,'Свод');
 
   XLSX.writeFile(wb,'FBSM_Табель_'+_schShop+'_'+_schMk+'.xlsx');
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ЗАКРЫТИЕ МЕСЯЦА И ЖУРНАЛ ИЗМЕНЕНИЙ
+// ------------------------------------------------------------------
+// Закрытый месяц — тот, по которому зарплата уже выдана. Править в нём
+// продажи, планы и корректировки нельзя: начисление разъедется с тем,
+// что реально получили на руки.
+//
+// Проверка идёт на клиенте, как и всё остальное разграничение прав
+// в этой программе. От случайной правки защищает, от намеренной —
+// нет; это чинится только переносом проверок в Edge Function.
+// ══════════════════════════════════════════════════════════════════
+let _closed=null;   // Set из '2026-07'
+
+async function loadClosed(force){
+  if(_closed&&!force)return _closed;
+  try{
+    const r=await schFetch('/closed_months?select=mk');
+    _closed=new Set((r||[]).map(x=>x.mk));
+  }catch(e){ _closed=new Set(); }   // таблицы ещё нет — ничего не блокируем
+  return _closed;
+}
+function isClosed(mk){ return !!(_closed&&_closed.has(normMk(mk))); }
+
+// Единая проверка перед любой правкой. Возвращает текст ошибки или null.
+function closedGuard(mk){
+  return isClosed(mk)
+    ? 'Месяц '+normMk(mk)+' закрыт бухгалтером — зарплата по нему уже начислена. Правки запрещены.'
+    : null;
+}
+function sayClosed(msg,elId){
+  const m=elId?document.getElementById(elId):null;
+  if(m){m.style.cssText='';m.className='alert ae';m.textContent='🔒 '+msg}
+  else alert('🔒 '+msg);
+}
+
+// Журнал: пишем и забываем. Ошибка записи не должна ломать операцию —
+// иначе журнал станет причиной сбоев вместо страховки.
+function logAction(action,target,mk,details){
+  try{
+    schFetch('/audit_log',{method:'POST',body:JSON.stringify([{
+      who:CU?CU.name:null, who_role:CU?CU.role:null,
+      action, target:target||null, mk:mk?normMk(mk):null,
+      details:details||null
+    }])}).catch(()=>{});
+  }catch(e){}
+}
+
+window.toggleMonthClosed=async function(mk){
+  await loadClosed(true);
+  const closing=!isClosed(mk);
+  const q=closing
+    ? 'Закрыть '+mk+'?\n\nПосле этого продажи, планы и корректировки за этот месяц править будет нельзя.\nДелайте это после того, как зарплата выдана.'
+    : 'Открыть '+mk+' обратно?\n\nПравки снова станут возможны.';
+  if(!confirm(q))return;
+  L(true);
+  try{
+    if(closing){
+      await schFetch('/closed_months',{method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify([{mk,closed_by:CU.name}])});
+    }else{
+      await schFetch('/closed_months?mk=eq.'+encodeURIComponent(mk),{method:'DELETE'});
+    }
+    logAction(closing?'closeMonth':'reopenMonth',null,mk,null);
+    await loadClosed(true);
+  }catch(e){L(false);alert('Не удалось: '+e.message+'\n\nВозможно, не выполнен скрипт 03_closed_months_audit.sql');return}
+  L(false);
+  loadPayroll();
 }
 
 // ── ИНТЕГРАЦИЯ С ВВОДОМ ПРОДАЖ ────────────────────────────────────
