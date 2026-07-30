@@ -210,12 +210,20 @@ async function callEdgeFn(action,data={},attempt=1){
         'Authorization':'Bearer '+SUPABASE_ANON_KEY,
         'apikey':SUPABASE_ANON_KEY,
       },
-      body:JSON.stringify({action,...data}),
+      // Токен входа прикладываем ко всем запросам — по нему сервер узнаёт,
+      // кто спрашивает, и решает, можно ли. До этого сервер отвечал всем
+      // одинаково, а роль проверялась только в браузере и подменялась
+      // через консоль за десять секунд.
+      body:JSON.stringify({action,token:window._authToken||null,...data}),
     });
     const j=await r.json();
+    // Сессия кончилась или её нет — возвращаем на вход, а не показываем
+    // непонятную ошибку посреди работы.
+    if(j&&j.authError){ sessionLost(j.error||'Сессия истекла'); throw new Error('AUTH'); }
     if(j.error)throw new Error(j.error);
     return j;
   }catch(e){
+    if(e&&e.message==='AUTH')throw e;
     if(attempt<3){
       await delay(800*attempt);
       return callEdgeFn(action,data,attempt+1);
@@ -228,6 +236,17 @@ async function callEdgeFn(action,data={},attempt=1){
     showFatal(msg+' ('+e.message+')');
     throw new Error(msg);
   }
+}
+
+// Сессия кончилась (12 часов) или страница открыта со старой версии.
+// Возвращаем на экран входа с понятным текстом — иначе человек увидел бы
+// отказ посреди работы и не понял, что делать.
+function sessionLost(text){
+  window._authToken=null; CU=null;
+  L(false);
+  showScreen('login');
+  const err=document.getElementById('lerr');
+  if(err){err.textContent=text+'. Войдите заново.';err.style.display='block';}
 }
 
 // Единая плашка об ошибке поверх интерфейса. Сама гаснет через 8 секунд.
