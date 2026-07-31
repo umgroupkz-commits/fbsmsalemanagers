@@ -546,7 +546,9 @@ window.doLogin=async function(){
 }
 window.doLogout=function(){CU=null;showScreen('login')}
 
+let _page='';
 function nav(fn){
+  _page=fn;
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
   const el=document.getElementById('n-'+fn);if(el)el.classList.add('active');
 }
@@ -714,35 +716,169 @@ window.calcScen=function(){
 }
 
 // ══ ВВОД ПРОДАЖ ══
-window.pgEnter=function(){
+window.pgEnter=async function(){
   nav('pgEnter');setTitle('Ввод продаж');setBadge('');
-  setContent(`<div id="pending-box"></div>
-  <div class="card" style="max-width:480px">
-    <div class="ct">Добавить / изменить продажи</div>
-    <div id="emsg"></div>
-    <div class="fg"><label class="fl">Дата</label><input type="date" id="ed" class="fc" value="${today()}"></div>
-    <div class="fg"><label class="fl">Сумма продаж (₸)</label><input type="number" id="es" class="fc" min="0" step="1" placeholder="0"></div>
-    <div class="fr">
-      <div class="fg"><label class="fl">Чеков</label><input type="number" id="ec" class="fc" min="0" step="1" placeholder="0"></div>
-      <div class="fg"><label class="fl">Единиц товара</label><input type="number" id="eu" class="fc" min="0" step="1" placeholder="0"></div>
-    </div>
-    <div class="fg" style="margin-top:4px"><label class="fl">Возврат (₸) <span style="color:var(--red);font-size:11px">— вычтется из факта месяца</span></label><input type="number" id="er" class="fc" min="0" step="1" placeholder="0"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn bp" onclick="saveEntry()">Сохранить</button>
-      <button class="btn" onclick="loadForEdit()">Редактировать запись за дату</button>
-    </div>
-    <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
-      <button class="btn bbl" onclick="saveZeroShift()">🕒 Смена без продаж</button>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center">
-        Отработал, но продаж не было — смена всё равно засчитается в оклад
-      </div>
-    </div>
-  </div>`);
-  renderPending();
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  const today_=today();
+  let pend=[], todayRow=null;
+  try{ pend=await pendingFor(CU.id); }catch(e){}
+  try{
+    const t=await schFetch('/sales_pending?select=*&uid=eq.'+encodeURIComponent(CU.id)
+      +'&date=eq.'+today_);
+    todayRow=Array.isArray(t)&&t.length?t[0]:null;
+  }catch(e){}
+  const mine=pend.find(r=>normDate(r.date)===today_);
+  const others=pend.filter(r=>normDate(r.date)!==today_);
+  const doneToday=!mine&&todayRow&&todayRow.confirmed_at?todayRow:null;
+  const hasFeed=pend.length>0||!!todayRow||await hasAnyPending(CU.id);
+  const sinf=hasFeed?await syncInfo(today_):{at:null,ok:true,closed:null};
+
+  // Данные за сегодня уже приехали из 1С — показываем их без права правки
+  let head='';
+  if(mine){
+    const net=Math.max(0,(+mine.sales||0)-(+mine.returns||0));
+    const avg=(+mine.checks||0)>0?net/(+mine.checks):0;
+    const upt=(+mine.checks||0)>0?(+mine.units||0)/(+mine.checks):0;
+    const retOnly=(+mine.sales||0)===0&&(+mine.checks||0)===0&&(+(mine.returns||0))>0;
+    head='<div class="card" style="max-width:520px;border-color:var(--amber)">'
+      +'<div class="ct">📥 Продажи за '+dayFull(today_)+' — из 1С</div>'
+      +'<div class="alert ai" style="font-size:12.5px">Цифры пришли из 1С, править их нельзя. '
+      +'Пока не подтвердите — день не попадёт в зарплату'+(retOnly?'':' и смена не засчитается')+'.</div>'
+      +'<div class="fg"><label class="fl">Дата</label>'
+      +'<input type="text" class="fc" value="'+today_+'" disabled></div>'
+      +'<div class="fg"><label class="fl">Сумма продаж (₸)</label>'
+      +'<input type="text" class="fc" value="'+fmtN(+mine.sales||0)+'" disabled></div>'
+      +'<div class="fr">'
+      +'<div class="fg"><label class="fl">Чеков</label>'
+      +'<input type="text" class="fc" value="'+(+mine.checks||0)+'" disabled></div>'
+      +'<div class="fg"><label class="fl">Позиций</label>'
+      +'<input type="text" class="fc" value="'+(+mine.units||0)+'" disabled></div></div>'
+      +'<div class="fg"><label class="fl">Возврат (₸)</label>'
+      +'<input type="text" class="fc" style="color:var(--red)" value="'+fmtN(+mine.returns||0)+'" disabled></div>'
+      +'<div class="zpr"><span>Итого за день</span><b>'+fmt(net)+'</b></div>'
+      +'<div class="zpr"><span>Средний чек</span><span>'+(avg?fmt(avg):'—')+'</span></div>'
+      +'<div class="zpr"><span>Позиций на чек</span><span>'+(upt?upt.toFixed(2):'—')+'</span></div>'
+      +(retOnly?'<div class="alert" style="background:var(--al);color:var(--amber);font-size:12px;margin-top:.75rem">'
+        +'Только возврат — смена за этот день не засчитается.</div>':'')
+      +'<button class="btn bp bbl" style="margin-top:1rem" onclick="confirmDay(\''+today_+'\',this)">✓ Подтвердить продажи за '+dayLabel(today_)+'</button>'
+      +'<div id="emsg" style="margin-top:8px"></div>'
+      +syncNote(sinf)
+      +'</div>';
+  }else if(doneToday){
+    const net=Math.max(0,(+doneToday.sales||0)-(+doneToday.returns||0));
+    head='<div class="card" style="max-width:520px;border-color:var(--green)">'
+      +'<div class="ct">✓ Продажи за '+dayFull(today_)+' подтверждены</div>'
+      +'<div class="zpr"><span>Итого за день</span><b>'+fmt(net)+'</b></div>'
+      +'<div class="zpr"><span>Чеков</span><span>'+(+doneToday.checks||0)+'</span></div>'
+      +'<div class="zpr"><span>Позиций</span><span>'+(+doneToday.units||0)+'</span></div>'
+      +'<div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
+      +'День учтён в зарплате. Если 1С уточнит цифры — они обновятся сами.</div>'
+      +'<div id="emsg"></div>'+syncNote(sinf)+'</div>';
+  }else if(hasFeed){
+    head='<div class="card" style="max-width:520px">'
+      +'<div class="ct">Продажи за '+dayFull(today_)+'</div>'
+      +'<div class="alert ai" style="font-size:12.5px">Данные за '+today_+' из 1С ещё не пришли. '
+      +'Обмен идёт раз в час — загляните позже.</div>'
+      +'<div id="emsg"></div>'
+      +'<div style="border-top:1px dashed var(--border);padding-top:10px;margin-top:10px">'
+      +'<button class="btn bbl" onclick="saveZeroShift()">🕒 Отметить смену без продаж</button>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center">'
+      +'Работали, но продаж не было — смена засчитается в оклад</div></div>'
+      +syncNote(sinf)+'</div>';
+  }else{
+    // 1С по этому продавцу ещё не подключена — старый ручной ввод
+    head='<div class="card" style="max-width:480px">'
+      +'<div class="ct">Добавить продажи за '+dayFull(today_)+'</div>'
+      +'<div id="emsg"></div>'
+      +'<div class="fg"><label class="fl">Дата</label>'
+      +'<input type="date" id="ed" class="fc" value="'+today_+'"></div>'
+      +'<div class="fg"><label class="fl">Сумма продаж (₸)</label>'
+      +'<input type="number" id="es" class="fc" min="0" step="1" placeholder="0"></div>'
+      +'<div class="fr">'
+      +'<div class="fg"><label class="fl">Чеков</label>'
+      +'<input type="number" id="ec" class="fc" min="0" step="1" placeholder="0"></div>'
+      +'<div class="fg"><label class="fl">Единиц товара</label>'
+      +'<input type="number" id="eu" class="fc" min="0" step="1" placeholder="0"></div></div>'
+      +'<div class="fg"><label class="fl">Возврат (₸)</label>'
+      +'<input type="number" id="er" class="fc" min="0" step="1" placeholder="0"></div>'
+      +'<button class="btn bp bbl" onclick="saveEntry()">Сохранить</button>'
+      +'<div style="border-top:1px dashed var(--border);padding-top:10px;margin-top:10px">'
+      +'<button class="btn bbl" onclick="saveZeroShift()">🕒 Смена без продаж</button>'
+      +'<div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center">'
+      +'Отработал, но продаж не было — смена всё равно засчитается</div></div></div>';
+  }
+
+  // Напоминание про прошлые дни — с переходом в историю
+  let note='';
+  if(others.length){
+    const ds=others.map(r=>normDate(r.date)).sort();
+    note='<div class="alert" style="background:var(--al);color:var(--amber);max-width:520px">'
+      +'⏳ Не подтверждены дни: <b>'+schDatesLabel(ds)+'</b>'
+      +' &nbsp;<a href="#" onclick="pgHist();return false" style="color:var(--bd)">'
+      +'посмотреть и подтвердить →</a></div>';
+  }
+  setContent(note+head);
 }
 
-// Смена без продаж: сохраняем нулевую запись за дату. Оклад считается
-// как rate × (число дней с записями), поэтому нулевая запись = +1 смена.
+
+// Когда последний раз забирали данные из 1С и закрыт ли уже день.
+// Продавцу важно понимать, свежие перед ним цифры или обмен отвалился
+// час назад: иначе он подтвердит неполный день и будет считать,
+// что программа его обсчитала.
+async function syncInfo(date){
+  const out={at:null,ok:true,closed:null};
+  try{
+    const st=await schFetch('/sync_state?select=at,ok&key=eq.onec');
+    if(Array.isArray(st)&&st.length){ out.at=st[0].at; out.ok=st[0].ok!==false; }
+  }catch(e){}
+  try{
+    const d=await schFetch('/onec_days?select=is_closed&date=eq.'+date);
+    if(Array.isArray(d)&&d.length) out.closed=!!d[0].is_closed;
+  }catch(e){}
+  return out;
+}
+
+// Строка «данные из 1С на 19:42» + предупреждение про незакрытый день
+function syncNote(info){
+  if(!info.at) return '';
+  const t=new Date(info.at);
+  const mins=Math.round((Date.now()-t.getTime())/60000);
+  const hhmm=String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0');
+  // Обмен раз в 15 минут. Полчаса тишины — уже повод показать это явно.
+  const stale=!info.ok||mins>30;
+  let h='<div style="font-size:11.5px;color:var(--muted);margin-top:.6rem">'
+    +(stale?'⚠️ ':'')+'Данные из 1С на '+hhmm
+    +(stale?' — обмен давно не проходил, покажите это управляющему':'')+'</div>';
+  if(info.closed===false) h+='<div style="font-size:11.5px;color:var(--amber);margin-top:.25rem">'
+    +'День в 1С ещё не закрыт — сумма может дорасти. Уточнение программа '
+    +'подтянет сама, переподтверждать не нужно.</div>';
+  return h;
+}
+
+// '2026-07-31' → «пятница, 31 июля». Дата в карточке подтверждения
+// должна читаться с одного взгляда: человек подтверждает конкретный день,
+// а не «сегодня» вообще — задним числом это особенно важно.
+function dayLabel(d){
+  const p=d.split('-');
+  return new Date(+p[0],+p[1]-1,+p[2])
+    .toLocaleDateString('ru-RU',{day:'numeric',month:'long'});
+}
+// «31 июля, пятница» — день недели отдельно, чтобы не ломать падеж
+// в обороте «продажи за 31 июля»
+function dayFull(d){
+  const p=d.split('-');
+  const w=new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString('ru-RU',{weekday:'long'});
+  return dayLabel(d)+', '+w;
+}
+
+// Приходят ли этому продавцу данные из 1С вообще
+async function hasAnyPending(uid){
+  try{
+    const r=await schFetch('/sales_pending?select=uid&uid=eq.'+encodeURIComponent(uid)+'&limit=1');
+    return Array.isArray(r)&&r.length>0;
+  }catch(e){ return false; }
+}
+
 window.saveZeroShift=async function(){
   const date=document.getElementById('ed').value;
   if(!date){alert('Выберите дату');return}
@@ -754,23 +890,6 @@ window.saveZeroShift=async function(){
   await saveEntry();
 }
 
-window.loadForEdit=async function(){
-  const date=document.getElementById('ed').value;if(!date)return;
-  L(true);
-  const all=await api('getSales',{uid:CU.id});
-  _sales=all;L(false);
-  const e=all.find(s=>normDate(s.date)===date);
-  if(e){
-    document.getElementById('es').value=e.sales||0;
-    document.getElementById('ec').value=e.checks||0;
-    document.getElementById('eu').value=e.units||0;
-    document.getElementById('er').value=e.returns||0;
-  }else{
-    const m=document.getElementById('emsg');
-    m.className='alert ai';m.textContent=`Записей за ${date} не найдено`;
-    setTimeout(()=>m.textContent='',2000);
-  }
-}
 
 window.saveEntry=async function(){
   const date=document.getElementById('ed').value;
@@ -825,54 +944,70 @@ window.pgHist=async function(){
 
 window.loadHist=async function(){
   const mk=document.getElementById('hm').value;
+  const body=document.getElementById('hbody');
+  body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
   L(true);
   _sales=await api('getSales',{uid:CU.id});
+  let pend=[];
+  try{
+    pend=await schFetch('/sales_pending?select=*&uid=eq.'+encodeURIComponent(CU.id)
+      +'&order=date.desc')||[];
+  }catch(e){}
   L(false);
-  const entries=getEntriesFor(CU.id,mk).map(e=>({...e,date:normDate(e.date)})).sort((a,b)=>b.date.localeCompare(a.date));
-  const plan=getPlan(CU.id,mk);
-  const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(entries);
-  const pct=plan>0?ts/plan:0;
-  let html='';
-  if(!entries.length){
-    html='<div style="color:var(--muted);font-size:13px;padding:1rem 0">Нет записей за этот период</div>';
-  }else{
-    html=`<div class="tw-wrap"><table>
-      <tr><th>Дата</th><th>Продажи</th><th>Возврат</th><th>Факт</th><th>Чеков</th><th>Единиц</th><th>Ср.чек</th><th></th></tr>
-      ${entries.map(e=>`<tr>
-        <td>${e.date}</td><td>${fmt(+e.sales)}</td><td style="color:var(--red)">${+(e.returns||0)>0?"−"+fmt(+(e.returns||0)):"—"}</td><td><b>${fmt(Math.max(0,+e.sales-+(e.returns||0)))}</b></td><td>${fmtN(+e.checks)}</td><td>${fmtN(+e.units)}</td>
-        <td>${+e.checks>0?fmt(+e.sales/+e.checks):'—'}</td>
-        <td style="white-space:nowrap">
-          <button class="btn bsm" onclick="editEntry('${e.date}')">✏️</button>
-          <button class="btn bsm bd2" onclick="delEntry('${e.date}')">✕</button>
-        </td>
-      </tr>`).join('')}
-    </table></div>
-    <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);display:flex;gap:2rem;font-size:13px;flex-wrap:wrap">
-      <span>Итого: <b>${fmt(ts)}</b></span><span>Чеков: <b>${fmtN(tc)}</b></span>
-      <span>Единиц: <b>${fmtN(tu)}</b></span>
-      <span>Выполнение: <b style="color:${barCol(pct)}">${Math.round(pct*100)}%</b></span>
-    </div>`;
-  }
-  document.getElementById('hbody').innerHTML=html;
+
+  // Сводим подтверждённое и ждущее в один список по датам месяца
+  const byDate={};
+  getEntriesFor(CU.id,mk).forEach(e=>{byDate[normDate(e.date)]={done:e}});
+  pend.filter(r=>normDate(r.date).startsWith(mk)).forEach(r=>{
+    const d=normDate(r.date);
+    (byDate[d]=byDate[d]||{}).wait=r.confirmed_at?null:r;
+    if(r.confirmed_at)(byDate[d]=byDate[d]||{}).confirmedAt=r.confirmed_at;
+  });
+  const dates=Object.keys(byDate).sort().reverse();
+  if(!dates.length){body.innerHTML='<div style="color:var(--muted)">Записей за этот месяц нет</div>';return}
+
+  const S=sumEntries(getEntriesFor(CU.id,mk));
+  const waiting=dates.filter(d=>byDate[d].wait).length;
+  // Править продажи может только бухгалтер и главный администратор —
+  // на случай спешки в день выдачи зарплаты. Продавцу и управляющему
+  // цифры менять нельзя: они приходят из 1С.
+  const mayEdit=CU.role==='accountant'||CU.role==='admin';
+
+  let h='';
+  if(waiting) h+='<div class="alert" style="background:var(--al);color:var(--amber)">'
+    +'⏳ Не подтверждено дней: <b>'+waiting+'</b>. Пока не подтвердите — они не идут в зарплату.</div>';
+  h+='<div class="g4" style="margin-bottom:1rem">'
+    +'<div class="metric"><div class="ml">Продажи</div><div class="mv">'+fmt(S.net)+'</div></div>'
+    +'<div class="metric"><div class="ml">Чеков</div><div class="mv">'+fmtN(S.checks)+'</div></div>'
+    +'<div class="metric"><div class="ml">Позиций</div><div class="mv">'+fmtN(S.units)+'</div></div>'
+    +'<div class="metric"><div class="ml">Смен</div><div class="mv">'
+      +fmtSh(schShifts(CU.id,getEntriesFor(CU.id,mk)))+'</div></div></div>';
+  h+='<div class="tw-wrap"><table><tr><th>Дата</th><th>Продажи</th><th>Возврат</th><th>Итого</th>'
+    +'<th>Чеков</th><th>Позиций</th><th>Ср. чек</th><th>Статус</th></tr>';
+  dates.forEach(d=>{
+    const r=byDate[d], e=r.done, w=r.wait;
+    // Если день ждёт подтверждения — показываем цифры из 1С: именно они
+    // применятся при нажатии кнопки, даже если запись уже есть.
+    const src=w||e;
+    const sales=+((src||{}).sales||0), ret=+((src||{}).returns||0);
+    const ch=+((src||{}).checks||0), un=+((src||{}).units||0);
+    const net=Math.max(0,sales-ret);
+    let st;
+    if(w) st='<button class="btn bsm bp" onclick="confirmDay(\''+d+'\',this)">Подтвердить</button>';
+    else if(e&&String(e.source||'')==='1c') st='<span class="tag ts">подтверждено</span>';
+    else st='<span class="tag ti">внесено вручную</span>';
+    h+='<tr'+(w?' style="background:var(--al)"':'')+'>'
+      +'<td>'+d+'</td><td>'+fmt(sales)+'</td>'
+      +'<td style="color:var(--red)">'+(ret>0?'−'+fmt(ret):'—')+'</td>'
+      +'<td><b>'+fmt(net)+'</b></td><td>'+fmtN(ch)+'</td><td>'+fmtN(un)+'</td>'
+      +'<td>'+(ch>0?fmt(net/ch):'—')+'</td><td>'+st+'</td></tr>';
+  });
+  h+='</table></div>';
+  if(!mayEdit) h+='<div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
+    +'Цифры приходят из 1С и не редактируются. Если что-то не сходится — скажите управляющему.</div>';
+  body.innerHTML=h;
 }
 
-window.editEntry=function(date){
-  pgEnter();
-  setTimeout(async()=>{
-    document.getElementById('ed').value=date;
-    await loadForEdit();
-  },50);
-}
-
-window.delEntry=async function(date){
-  const shut=closedGuard(date);
-  if(shut){alert('🔒 '+shut);return}
-  if(!confirm(`Удалить запись за ${date}?`))return;
-  L(true);await apiPost('deleteSale',{uid:CU.id,date});L(false);
-  await loadHist();
-}
-
-// ══ ИСТОРИЯ ПРОДАВЦОВ (для управляющего — свой магазин, для админа — все) ══
 window.pgSellerHist=async function(){
   nav('pgSellerHist');setTitle('История продавцов');setBadge('');
   const sellers=getVisibleSellers();
@@ -1179,7 +1314,8 @@ window.loadPayroll=async function(forceRefresh){
         +'<td style="color:var(--red)">'+(deductions>0?'−'+fmt(deductions):'—')+'</td>'
         +'<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(r.payout)+'</td>'
         +'<td style="white-space:nowrap">'
-        +'<button class="btn bsm" onclick=\'openEdit('+escAttr({uid:r.id,name:r.name,mk,ents:r.ents})+')\'>✏️</button>'
+        +((CU.role==='accountant'||CU.role==='admin')?
+           '<button class="btn bsm" onclick=\'openEdit('+escAttr({uid:r.id,name:r.name,mk,ents:r.ents})+')\'>✏️</button>':'')
         +'<button class="btn bsm" onclick=\'openAdjust('+escAttr({uid:r.id,name:r.name,mk,realSales:r.ts,role:"seller"})+')\'>💵</button>'
         +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:r.id,name:r.name,shop:r.shop,mk,ts:r.ts,tc:r.tc,tu:r.tu,plan:r.plan,actualShifts:r.actualShifts,shopMet:r.shopMet,role:"seller"})+')\'>🖨️</button>'
         +'</td></tr>';
@@ -2861,11 +2997,12 @@ async function pendingFor(uid){
   }catch(e){ return []; }   // таблицы ещё нет — ведём себя как раньше
 }
 // Сколько неподтверждённых дней у продавцов магазина
-async function pendingCount(uids){
+async function pendingCount(uids, full){
   if(!uids.length)return [];
   try{
-    return await schFetch('/sales_pending?select=uid,date&confirmed_at=is.null&uid=in.'
-      +encodeURIComponent(schInList(uids)))||[];
+    return await schFetch('/sales_pending?select='+(full?'*':'uid,date')
+      +'&confirmed_at=is.null&uid=in.'+encodeURIComponent(schInList(uids))
+      +'&order=date')||[];
   }catch(e){ return []; }
 }
 
@@ -2894,36 +3031,10 @@ window.confirmDay=async function(date,btn){
     _sales=await api('getSales',{uid:CU.id});
   }catch(e){ L(false); if(btn)btn.disabled=false; alert('Не удалось подтвердить: '+e.message); return; }
   L(false);
-  pgEnter();
+  // Возвращаемся туда, откуда подтверждали: из истории — в историю
+  if(_page==='pgHist') loadHist(); else pgEnter();
 }
 
-// Блок «ждут подтверждения» на странице ввода продаж
-async function renderPending(){
-  const box=document.getElementById('pending-box');
-  if(!box)return;
-  await syncConfirmed([CU.id]);      // 1С могла поправить уже подтверждённое
-  const rows=await pendingFor(CU.id);
-  if(!rows.length){ box.innerHTML=''; return; }
-  const d=x=>new Date(x+'T00:00:00').toLocaleDateString('ru-RU',{day:'numeric',month:'long'});
-  box.innerHTML='<div class="card" style="border-color:var(--amber)">'
-    +'<div class="ct">📥 Данные из 1С — подтвердите</div>'
-    +'<div class="alert ai" style="font-size:12.5px">Цифры пришли из 1С, править их нельзя. '
-    +'Пока не подтвердите — день не попадёт в зарплату и смена не засчитается.</div>'
-    +'<div class="tw-wrap"><table><tr><th>Дата</th><th>Продажи</th><th>Чеков</th>'
-    +'<th>Позиций</th><th>Возврат</th><th>Средний чек</th><th></th></tr>'
-    +rows.map(r=>{
-      const net=Math.max(0,(+r.sales||0)-(+r.returns||0));
-      const avg=(+r.checks||0)>0?net/(+r.checks):0;
-      const retOnly=(+r.sales||0)===0&&(+r.checks||0)===0&&(+(r.returns||0))>0;
-      return '<tr><td><b>'+d(normDate(r.date))+'</b>'
-        +(retOnly?'<div style="font-size:11px;color:var(--muted)">только возврат — смена не засчитается</div>':'')+'</td>'
-        +'<td>'+fmt(+r.sales||0)+'</td><td>'+(+r.checks||0)+'</td><td>'+(+r.units||0)+'</td>'
-        +'<td style="color:var(--red)">'+((+r.returns||0)>0?'−'+fmt(+r.returns):'—')+'</td>'
-        +'<td>'+(avg?fmt(avg):'—')+'</td>'
-        +'<td><button class="btn bp bsm" onclick="confirmDay(\''+normDate(r.date)+'\',this)">Подтвердить</button></td></tr>';
-    }).join('')
-    +'</table></div></div>';
-}
 
 
 
@@ -2961,6 +3072,67 @@ async function syncConfirmed(uids){
   return done;
 }
 
+
+// Массовое подтверждение — для первой заливки и для случаев, когда
+// продавцы затянули. Обычный путь всё равно через самого продавца:
+// смысл подтверждения в том, чтобы человек увидел свои цифры.
+// Поэтому кнопка только у бухгалтера и главного администратора.
+async function confirmRows(rows, onProgress){
+  let done=0, skipped=0, failed=[];
+  for(const r of rows){
+    const date=normDate(r.date);
+    if(closedGuard(date)){ skipped++; continue; }
+    try{
+      await apiPost('saveSale',{uid:r.uid,date,
+        sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0,
+        source:'1c'});
+      await schFetch('/sales_pending?uid=eq.'+encodeURIComponent(r.uid)+'&date=eq.'+date,
+        {method:'PATCH',body:JSON.stringify({
+          confirmed_at:new Date().toISOString(), confirmed_by:CU.name})});
+      // День с одним лишь возвратом смены не создаёт — см. isReturnOnly1c
+      const retOnly=(+r.sales||0)===0&&(+r.checks||0)===0&&(+(r.returns||0))>0;
+      if(!retOnly){
+        const u=USERS.find(x=>String(x.id)===String(r.uid));
+        schMarkActual(r.uid,date,u?u.shop:null).catch(()=>{});
+      }
+      done++;
+    }catch(e){ failed.push(date+' '+e.message); }
+    if(onProgress) onProgress(done+skipped+failed.length, rows.length);
+  }
+  return {done,skipped,failed};
+}
+
+window.confirmAllPending=async function(btn){
+  const sellers=getVisibleSellers();
+  const all=await pendingCount(sellers.map(u=>u.id), true);
+  // Сегодняшний день не трогаем: его продавец подтверждает сам, увидев
+  // свои цифры. Массово закрываем только прошлые дни.
+  const today_=today();
+  const rows=all.filter(r=>normDate(r.date)<today_);
+  const skipToday=all.length-rows.length;
+  if(!rows.length){
+    alert(skipToday?'Остались только сегодняшние дни — их подтверждают сами продавцы.'
+                   :'Нечего подтверждать');
+    return;
+  }
+  if(!confirm('Подтвердить данные из 1С за прошлые дни?\n\nДней: '+rows.length
+    +(skipToday?'\nСегодняшних дней пропустим: '+skipToday+' — их подтвердят продавцы.':'')
+    +'\n\nОни попадут в расчёт зарплаты и в график. Обычно это делает сам продавец — '
+    +'массовое подтверждение нужно для первой заливки.'))return;
+  if(btn){btn.disabled=true;btn.textContent='Подтверждаю…';}
+  L(true);
+  const res=await confirmRows(rows,(i,total)=>{
+    if(btn)btn.textContent='Подтверждаю… '+i+' из '+total;
+  });
+  logAction('confirmAll',null,null,{done:res.done,skipped:res.skipped});
+  L(false);
+  let msg='✓ Подтверждено дней: '+res.done;
+  if(res.skipped)msg+='. Пропущено из-за закрытых месяцев: '+res.skipped;
+  if(res.failed.length)msg+='. Ошибок: '+res.failed.length;
+  alert(msg);
+  pgReport();
+}
+
 // Кто не подтвердил свои дни. Показывается управляющему, бухгалтеру и
 // админу на «Сводке»: подтверждение — обязанность продавца, но следить
 // за ним приходится тому, кто отвечает за магазин.
@@ -2983,6 +3155,9 @@ async function renderNotConfirmed(){
     +'<div class="ct">\u23F3 Не подтверждены данные из 1С — '+total+' дн.</div>'
     +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:.75rem">'
     +'Пока продавец не подтвердит день, он не идёт в зарплату и смена не засчитывается.</div>'
+    +((CU.role==='admin'||CU.role==='accountant')
+       ?'<button class="btn bp" style="margin-bottom:.75rem" onclick="confirmAllPending(this)">'
+        +'✓ Подтвердить все ('+total+')</button>':'')
     +'<div class="tw-wrap"><table><tr><th>Продавец</th><th>Магазин</th><th>Дней</th><th>Какие</th></tr>'
     +items.map(i=>'<tr><td><b>'+esc(i.name)+'</b></td><td>'+esc(i.shop)+'</td>'
       +'<td><span class="tag tw">'+i.dates.length+'</span></td>'
