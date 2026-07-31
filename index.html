@@ -2257,8 +2257,19 @@ function schShiftWeight(uid,date){
   // другу. Считаем как обычную смену, в пользу сотрудника.
   return(t&&t.counts_as_shift)?(+t.k||1):1;
 }
+// День, где нет ни продаж, ни чеков, а есть только возврат, И запись
+// пришла из 1С — это НЕ смена. 1С относит возврат к продавцу исходной
+// продажи, а не к тому, кто в этот день стоял за кассой: человек мог
+// вообще не работать.
+//
+// Для записей, внесённых руками, правило не действует: раз человек сам
+// открыл программу и внёс день — он на работе был.
+function isReturnOnly1c(e){
+  return String(e.source||'')==='1c'
+    && (+e.sales||0)===0 && (+e.checks||0)===0 && (+(e.returns||0))>0;
+}
 function schShifts(uid,ents){
-  return ents.reduce((s,e)=>s+schShiftWeight(uid,e.date),0);
+  return ents.reduce((s,e)=>s+(isReturnOnly1c(e)?0:schShiftWeight(uid,e.date)),0);
 }
 async function schLoadWeights(mk,uids){
   try{await schLoadRefs();_schW=await schLoad(mk,uids)}
@@ -2687,7 +2698,11 @@ window.toggleMonthClosed=async function(mk){
 
 async function queuePending(){
   try{
-    return await schFetch('/import_queue?select=*&status=eq.pending&order=first_seen')||[];
+    // Сначала те, кто реально продаёт: у них решение срочнее.
+    // Остальных тоже показываем — среди них будущие кассиры и другие
+    // роли, которым позже назначат свои должности и сетки.
+    return await schFetch('/import_queue?select=*&status=eq.pending'
+      +'&order=sales_amount.desc,name.asc')||[];
   }catch(e){ return []; }   // таблицы ещё нет — молчим
 }
 
@@ -2725,14 +2740,19 @@ window.pgQueue=async function(){
   setContent('<div class="card" style="border-color:var(--amber)">'
     +'<div class="ct">👤 Ждут решения — '+rows.length+'</div>'
     +'<div class="alert ai" style="font-size:12.5px">Пришли из 1С, но в программу не добавлены. '
-    +'Проверьте роль и магазин, потом добавьте. Служебные учётки 1С отправьте в «Игнорировать» — '
-    +'иначе они вернутся при следующем обмене.</div>'
-    +'<div class="tw-wrap"><table><tr><th>ФИО из 1С</th><th>Магазин в 1С</th><th>Должность</th>'
-    +'<th>Роль у нас</th><th>Магазин у нас</th><th></th></tr>'
-    +rows.map(r=>'<tr>'
-      +'<td><b>'+esc(r.name)+'</b></td>'
+    +'Сверху те, кто реально продаёт. Ниже — все остальные из справочника: '
+    +'кассиры и прочие, кому позже назначите свои должности и сетки. '
+    +'Служебные записи 1С отправьте в «Игнорировать» — иначе они вернутся при следующем обмене.</div>'
+    +'<div class="tw-wrap"><table><tr><th>ФИО из 1С</th><th>Магазин в 1С</th>'
+    +'<th>Продажи за 30 дней</th><th>Роль у нас</th><th>Магазин у нас</th><th></th></tr>'
+    +rows.map(r=>'<tr'+(r.is_active===false?' style="opacity:.55"':'')+'>'
+      +'<td><b>'+esc(r.name)+'</b>'
+        +(r.is_active===false?' <span class="tag td">неактивен в 1С</span>':'')+'</td>'
       +'<td style="font-size:12px;color:var(--muted)">'+esc(r.ext_shop||'—')+'</td>'
-      +'<td style="font-size:12px">'+esc(r.position||'—')+'</td>'
+      +'<td>'+((+r.sales_amount>0)
+          ?'<b>'+fmt(+r.sales_amount)+'</b><div style="font-size:11px;color:var(--muted)">'
+            +(+r.sales_days)+' дн.</div>'
+          :'<span style="color:var(--muted)">не продавал</span>')+'</td>'
       +'<td><select class="fc" style="padding:4px 6px;font-size:12px" id="qr-'+esc(r.ext_id)+'">'+roleOpts(r.sugg_role)+'</select></td>'
       +'<td><select class="fc" style="padding:4px 6px;font-size:12px" id="qs-'+esc(r.ext_id)+'">'+shopOpts(r.sugg_shop)+'</select></td>'
       +'<td style="white-space:nowrap">'
@@ -2861,11 +2881,16 @@ window.confirmDay=async function(date,btn){
     if(!r){L(false);alert('Данные за '+date+' не найдены');return}
     // В расчёт данные попадают ровно здесь и только здесь
     await apiPost('saveSale',{uid:CU.id,date,
-      sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0});
+      sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0,
+      source:'1c'});
     await schFetch('/sales_pending?uid=eq.'+encodeURIComponent(CU.id)+'&date=eq.'+date,
       {method:'PATCH',body:JSON.stringify({confirmed_at:new Date().toISOString(),confirmed_by:CU.name})});
     logAction('confirmSales',CU.name,date,{sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0});
-    schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
+    // День, где только возврат, смену не создаёт — ни в зарплате, ни в
+    // графике. На человека просто оформили возврат его прежней продажи,
+    // работать в этот день он мог и не выходить.
+    const retOnly=(+r.sales||0)===0&&(+r.checks||0)===0&&(+(r.returns||0))>0;
+    if(!retOnly) schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
     _sales=await api('getSales',{uid:CU.id});
   }catch(e){ L(false); if(btn)btn.disabled=false; alert('Не удалось подтвердить: '+e.message); return; }
   L(false);
@@ -2889,7 +2914,9 @@ async function renderPending(){
     +rows.map(r=>{
       const net=Math.max(0,(+r.sales||0)-(+r.returns||0));
       const avg=(+r.checks||0)>0?net/(+r.checks):0;
-      return '<tr><td><b>'+d(normDate(r.date))+'</b></td>'
+      const retOnly=(+r.sales||0)===0&&(+r.checks||0)===0&&(+(r.returns||0))>0;
+      return '<tr><td><b>'+d(normDate(r.date))+'</b>'
+        +(retOnly?'<div style="font-size:11px;color:var(--muted)">только возврат — смена не засчитается</div>':'')+'</td>'
         +'<td>'+fmt(+r.sales||0)+'</td><td>'+(+r.checks||0)+'</td><td>'+(+r.units||0)+'</td>'
         +'<td style="color:var(--red)">'+((+r.returns||0)>0?'−'+fmt(+r.returns):'—')+'</td>'
         +'<td>'+(avg?fmt(avg):'—')+'</td>'
@@ -2923,7 +2950,8 @@ async function syncConfirmed(uids){
     const date=normDate(r.date);
     try{
       await apiPost('saveSale',{uid:r.uid,date,
-        sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0});
+        sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0,returns:+r.returns||0,
+        source:'1c'});
       await schFetch('/sales_pending?uid=eq.'+encodeURIComponent(r.uid)+'&date=eq.'+date,
         {method:'PATCH',body:JSON.stringify({confirmed_at:new Date().toISOString()})});
       logAction('resyncFrom1C',r.uid,date,{sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0});

@@ -369,6 +369,10 @@ async function saveSale(body: any) {
     key, uid: body.uid, date,
     sales: body.sales || 0, checks: body.checks || 0,
     units: body.units || 0, returns: body.returns || 0,
+    // Откуда запись: 'manual' — внёс человек, '1c' — приехало из обмена.
+    // Нужно, чтобы отличить день, где продавец реально работал и просто
+    // не было продаж, от дня, где 1С отнесла к нему чужой возврат.
+    source: body.source || "manual",
   });
   if (error) throw error;
   return { ok: true };
