@@ -716,9 +716,12 @@ window.calcScen=function(){
 }
 
 // ══ ВВОД ПРОДАЖ ══
-window.pgEnter=async function(){
+window.pgEnter=async function(silent){
   nav('pgEnter');setTitle('Ввод продаж');setBadge('');
-  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  // При тихом обновлении спиннер не показываем: иначе экран моргает
+  // каждые две минуты прямо под руками у продавца.
+  if(!silent) setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  enterAutoRefresh();
   const today_=today();
   let pend=[], todayRow=null;
   try{ pend=await pendingFor(CU.id); }catch(e){}
@@ -778,7 +781,7 @@ window.pgEnter=async function(){
     head='<div class="card" style="max-width:520px">'
       +'<div class="ct">Продажи за '+dayFull(today_)+'</div>'
       +'<div class="alert ai" style="font-size:12.5px">Данные за '+today_+' из 1С ещё не пришли. '
-      +'Обмен идёт раз в час — загляните позже.</div>'
+      +'Обмен идёт каждые 15 минут, страница обновляется сама.</div>'
       +'<div id="emsg"></div>'
       +'<div style="border-top:1px dashed var(--border);padding-top:10px;margin-top:10px">'
       +'<button class="btn bbl" onclick="saveZeroShift()">🕒 Отметить смену без продаж</button>'
@@ -869,6 +872,24 @@ function dayFull(d){
   const p=d.split('-');
   const w=new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString('ru-RU',{weekday:'long'});
   return dayLabel(d)+', '+w;
+}
+
+// Страница сама подтягивает свежие цифры, пока открыта. Обмен идёт раз
+// в 15 минут, но человек держит вкладку открытой всю смену и на статичную
+// страницу смотрит как на живую — так и рождается «показывает те же
+// продажи, что и два часа назад».
+let _enterTimer=null;
+function enterAutoRefresh(){
+  if(_enterTimer) return;
+  _enterTimer=setInterval(()=>{
+    if(_page!=='pgEnter'||document.hidden) return;
+    // Не мешаем, пока человек жмёт «Подтвердить»
+    if(document.querySelector('#content button[disabled]')) return;
+    pgEnter(true);
+  },120000);
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&_page==='pgEnter') pgEnter(true);
+  });
 }
 
 // Приходят ли этому продавцу данные из 1С вообще
