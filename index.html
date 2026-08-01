@@ -2509,7 +2509,12 @@ function schCellHtml(u,dt,hasPlanMonth){
     }
   }
   let fbg='transparent';
-  if(hasFact){fbg='var(--green)';ttl+=' · смена подтверждена продажами'}
+  if(hasFact){
+    fbg='var(--green)';
+    ttl+=r.actual_source==='manager-auto' ? ' · смена зачтена по графику'
+        : r.actual_source==='sales'       ? ' · смена подтверждена продажами'
+        : ' · смена отмечена';
+  }
   else if(hasPlan&&t&&t.counts_as_shift&&past){fbg='var(--red)';ttl+=' · факта нет'}
   // фон не пишем инлайном, когда его нет: иначе inline-стиль перебьёт
   // подсветку пустой клетки при наведении
@@ -2638,7 +2643,10 @@ window.schOpen=function(uid,dt){
       <button class="btn" onclick="this.closest('.ov').remove()">Отмена</button>
     </div>
     ${r&&r.actual_point?`<div style="margin-top:1rem;font-size:12px;color:var(--green)">
-      ✓ Факт: ${r.actual_point}${r.actual_source==='sales'?' (проставлено автоматически по продажам)':''}</div>`:''}
+      ✓ Факт: ${r.actual_point}${
+        r.actual_source==='sales'?' (проставлено автоматически по продажам)'
+        :r.actual_source==='manager-auto'?' (зачтено по графику — управляющий продажи не подтверждает)'
+        :''}</div>`:''}
   </div>`;
   document.body.appendChild(ov);
   schNote();
