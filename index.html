@@ -210,7 +210,7 @@ function refreshShops(){
   const all=[...new Set(listed.concat(fromUsers))];
   if(all.length) SHOPS=all;
 }
-const APP_VERSION='2026-08-06 · 6';
+const APP_VERSION='2026-08-06 · 7';
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -2151,6 +2151,20 @@ window.loadRunnerHist=async function(){
       +'<td><button class="btn bsm" onclick="runnerEditDlg(\''+d+'\')">✎</button></td></tr>';
   });
   h+='</table></div>';
+  // Вписать пропущенный день. Нужно на входе в режим: люди начинают
+  // отмечаться не с первого числа, а дни им уже отработаны. Запись
+  // уходит управляющему на подтверждение — сама себе смену не поставишь.
+  const lastDay=mk+'-'+String(daysInMk(mk)).padStart(2,'0');
+  const maxD=[lastDay,today()].sort()[0];
+  h+='<div style="border-top:1px dashed var(--border);margin-top:1rem;padding-top:1rem">'
+    +'<div style="font-size:13px;margin-bottom:.5rem"><b>Забыли отметиться?</b> '
+    +'Впишите день — управляющий его подтвердит.</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<input type="date" id="rh-add" class="fc" style="width:auto" '
+    +'min="'+mk+'-01" max="'+maxD+'" value="'+maxD+'">'
+    +'<button class="btn bsm bp" onclick="runnerAddDay()">Вписать день</button>'
+    +'<span id="rh-add-msg" style="font-size:12px;color:var(--red)"></span>'
+    +'</div></div>';
   h+='<div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
     +'Смена '+runnerCfg(CU.role).hours+' ч стоит '+fmt(runnerCfg(CU.role).rate)+'. Отработал меньше — '
     +'платим по времени с шагом '+runnerCfg(CU.role).step+' мин, больше — всё равно одна смена.</div>';
@@ -2160,6 +2174,19 @@ window.loadRunnerHist=async function(){
 // ── ПРАВКА ЗАДНИМ ЧИСЛОМ ──
 // Своё время раннер меняет сам, но каждая правка уходит управляющему.
 // Исходные отметки не затираем: управляющему нужно к чему возвращаться.
+// Открыть окно на выбранный день. Будущее не принимаем: смену,
+// которой ещё не было, отмечать нечем.
+window.runnerAddDay=function(){
+  const el=document.getElementById('rh-add'), msg=document.getElementById('rh-add-msg');
+  const d=el?el.value:'';
+  if(msg)msg.textContent='';
+  if(!d){ if(msg)msg.textContent='Выберите дату'; return; }
+  if(d>today()){ if(msg)msg.textContent='Это ещё не наступило'; return; }
+  const shut=closedGuard(d);
+  if(shut){ if(msg)msg.textContent=shut; return; }
+  runnerEditDlg(d);
+}
+
 window.runnerEditDlg=async function(date){
   const shut=closedGuard(date);
   if(shut){alert('🔒 '+shut);return}
