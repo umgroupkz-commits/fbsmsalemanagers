@@ -210,7 +210,7 @@ function refreshShops(){
   const all=[...new Set(listed.concat(fromUsers))];
   if(all.length) SHOPS=all;
 }
-const APP_VERSION='2026-08-06 · 4';
+const APP_VERSION='2026-08-06 · 5';
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -4293,7 +4293,11 @@ function schPicked(){
     try{ saved=JSON.parse(localStorage.getItem(schPickKey())||'null'); }catch(e){}
     _schPicked=Array.isArray(saved)?saved.filter(x=>all.indexOf(x)>=0):null;
   }
-  if(!_schPicked||!_schPicked.length) _schPicked=all.slice(0,1);
+  // Пока человек не выбрал сам — показываем всё. Гл. админу иначе видна
+  // одна точка из девяти, и вновь заведённый склад выглядит так, будто
+  // сотрудники в график не встали. Управляющему и продавцу выбирать
+  // всё равно не из чего: у них одно подразделение.
+  if(!_schPicked||!_schPicked.length) _schPicked=all.slice();
   // Порядок — как в списке подразделений, а не как нащёлкали.
   return all.filter(x=>_schPicked.indexOf(x)>=0);
 }
@@ -4352,7 +4356,16 @@ const schPointOfShop=s=>SCH_POINTS.find(p=>p.shop===s);
 // между точками (плюс склад, он в том же городе).
 function schPointsForShop(shop){
   const own=schPointOfShop(shop);
-  return own?SCH_POINTS.filter(p=>p.city===own.city):SCH_POINTS;
+  if(own) return SCH_POINTS.filter(p=>p.city===own.city);
+  // Своей точки у подразделения нет — склад, офис, интернет-магазин.
+  // Показывать им точки чужих городов бессмысленно: под складом
+  // появлялись итоги по всем магазинам сети.
+  return SCH_POINTS.filter(p=>p.shop===shop);
+}
+// Точка нужна там, где она есть. У склада её нет, и требовать выбрать
+// несуществующее — значит не дать поставить смену вовсе.
+function schNeedsPoint(t,shop){
+  return !!(t&&t.needs_point) && schPointsForShop(shop||_schShop).length>0;
 }
 function schIsWe(d){const n=new Date(d+'T00:00:00').getDay();return n===0||n===6}
 function schMonthRange(mk){return[mk+'-01',mk+'-'+String(daysInMk(mk)).padStart(2,'0')]}
@@ -4466,11 +4479,11 @@ function schCellHtml(u,dt,hasPlanMonth){
   const r=_sch[u.id+'|'+dt]||null;
   const t=r?schType(r.shift_type):null;
   const past=dt<today();
-  const hasPlan=!!(r&&(r.planned_point||(t&&!t.needs_point)));
+  const hasPlan=!!(r&&(r.planned_point||(t&&!schNeedsPoint(t))));
   const hasFact=!!(r&&r.actual_point);
   let bg='',txt='',col='#fff',cls='',ttl='';
   if(hasPlan){
-    if(t&&!t.needs_point){bg=t.color;txt=t.short;ttl=t.name}
+    if(t&&!schNeedsPoint(t)){bg=t.color;txt=t.short;ttl=t.name}
     else{
       const p=schPoint(r.planned_point);
       bg=p?p.color:'#888780';
@@ -4574,7 +4587,7 @@ async function schRenderShop(){
     hasPlan[u.id]=days.some(dt=>{
       const r=_sch[u.id+'|'+dt];if(!r)return false;
       const t=schType(r.shift_type);
-      return !!(r.planned_point||(t&&!t.needs_point));
+      return !!(r.planned_point||(t&&!schNeedsPoint(t)));
     });
   });
   users.forEach(u=>{
@@ -4583,7 +4596,7 @@ async function schRenderShop(){
       const r=_sch[u.id+'|'+dt];
       if(r){
         const t=schType(r.shift_type);
-        if(t&&t.counts_as_shift&&(r.planned_point||!t.needs_point))pc++;
+        if(t&&t.counts_as_shift&&(r.planned_point||!schNeedsPoint(t)))pc++;
         if(r.actual_point)fc++;
       }
       row+=schCellHtml(u,dt,hasPlan[u.id]);
@@ -4688,9 +4701,13 @@ function schNote(){
   const sel=ov.querySelector('#sch-tps .sel');
   const t=schType(sel?sel.dataset.t:'full');
   const pw=ov.querySelector('#sch-pts'),note=ov.querySelector('#sch-note');
-  if(t&&!t.needs_point){
+  if(t&&!schNeedsPoint(t)){
     pw.style.opacity='.35';pw.style.pointerEvents='none';
-    note.textContent=t.name+' — точка не нужна, в число смен не входит.';
+    // Точка бывает не нужна по двум разным причинам: это выходной или
+    // больничный, либо у подразделения точек нет вовсе. Смена при этом
+    // засчитывается, и говорить обратное — врать в глаза.
+    note.textContent=t.name+' — точка не нужна'
+      +(t.counts_as_shift?', смена засчитывается.':', в число смен не входит.');
   }else{
     pw.style.opacity='1';pw.style.pointerEvents='auto';
     note.textContent=(t&&+t.k!==1)?('Коэффициент к окладу: '+t.k):'';
@@ -4700,9 +4717,10 @@ window.schSave=async function(uid,dt){
   const ov=document.getElementById('sch-ov');
   const ts=ov.querySelector('#sch-tps .sel'),t=schType(ts?ts.dataset.t:'full');
   const ps=ov.querySelector('#sch-pts .sel');
-  const pCode=t.needs_point?(ps?ps.dataset.p:null):null;
-  if(t.needs_point&&!pCode){alert('Выберите точку');return}
   const u=USERS.find(x=>String(x.id)===String(uid));
+  const need=schNeedsPoint(t,u?u.shop:_schShop);
+  const pCode=need?(ps?ps.dataset.p:null):null;
+  if(need&&!pCode){alert('Выберите точку');return}
   const prev=_sch[uid+'|'+dt]||{};
   L(true);
   try{
