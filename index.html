@@ -210,7 +210,7 @@ function refreshShops(){
   const all=[...new Set(listed.concat(fromUsers))];
   if(all.length) SHOPS=all;
 }
-const APP_VERSION='2026-08-06 · 7';
+const APP_VERSION='2026-08-06 · 8';
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -5173,6 +5173,16 @@ async function pendingCount(uids, full){
 window.confirmDay=async function(date,btn){
   const shut=closedGuard(date);
   if(shut){alert('🔒 '+shut);return}
+  // То же правило, что и при ручном вводе: подтверждает продажи тот,
+  // кто стоит в графике. Иначе оплаченный день не попадёт в табель,
+  // и бухгалтер в конце месяца будет искать, откуда расхождение.
+  const selfSt=await schGuardSelf(CU.id,date);
+  if(selfSt.st==='block'){
+    alert('⛔ Вас нет в графике на '+date
+      +(selfSt.why&&selfSt.why!=='нет'?' — стоит «'+selfSt.why+'»':'')
+      +'. Попросите управляющего поставить смену — после этого подтвердите продажи.');
+    return;
+  }
   if(btn)btn.disabled=true;
   L(true);
   try{
@@ -5399,6 +5409,12 @@ async function schUncoveredAhead(shop){
 // разойдётся с начислением. Раньше вместо этого останавливали весь магазин
 // из-за пустого дня у кого угодно: страдали непричастные.
 async function schGuardSelf(uid,date){
+  // Правило включается вместе с полноценной работой (reportsFrom,
+  // по умолчанию 10 августа). До этого графики ещё заполняются, и
+  // жёсткий запрет в первый же день остановил бы половину сети:
+  // на завтра в графике стоит один человек из двух-трёх на магазин.
+  const enforce=String(PARAMS.reportsFrom||'2026-08-10');
+  if(date<enforce)return{st:'ok'};
   // Пока месяц не наступил под правило — никого не держим.
   if(curMk()<SCH_ENFORCE_FROM)return{st:'ok'};
   let rows;
