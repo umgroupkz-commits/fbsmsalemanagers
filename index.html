@@ -210,7 +210,7 @@ function refreshShops(){
   const all=[...new Set(listed.concat(fromUsers))];
   if(all.length) SHOPS=all;
 }
-const APP_VERSION='2026-08-06 · 5';
+const APP_VERSION='2026-08-06 · 6';
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -907,7 +907,8 @@ window.pgEnter=async function(silent){
     head='<div class="card" style="max-width:520px">'
       +'<div class="ct">Продажи за '+dayFull(today_)+'</div>'
       +'<div class="alert ai" style="font-size:12.5px">Данные за '+today_+' из 1С ещё не пришли. '
-      +'Обмен идёт каждые 15 минут, страница обновляется сама.</div>'
+      +'1С обновляет свою копию раз в час, наш обмен забирает её каждые 15 минут. '
+      +'Страница обновляется сама.</div>'
       +'<div id="emsg"></div>'
       +'<div style="border-top:1px dashed var(--border);padding-top:10px;margin-top:10px">'
       +'<button class="btn bbl" onclick="saveZeroShift()">🕒 Отметить смену без продаж</button>'
@@ -1059,8 +1060,17 @@ window.saveEntry=async function(){
   }
   // ГРАФИК: не даём вводить продажи, пока график на месяц не заполнен
   L(true);
+  const selfSt=await schGuardSelf(CU.id,date);
+  if(selfSt.st==='block'){
+    L(false);
+    const m0=document.getElementById('emsg');
+    const txt='⛔ Вас нет в графике на '+date
+      +(selfSt.why&&selfSt.why!=='нет'?' — стоит «'+selfSt.why+'»':'')
+      +'. Попросите управляющего поставить смену — после этого продажи сохранятся.';
+    if(m0){m0.style.cssText='';m0.className='alert ae';m0.textContent=txt}else alert(txt);
+    return;
+  }
   const schSt=await schGuard(CU.shop);
-  if(schSt.st==='block'){L(false);schSayGuard(schSt,false);return}
   await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns});
   logAction('saveSale',CU.name,date,{sales,checks,units,returns});
   // ГРАФИК: помечаем факт смены. Ошибка здесь не должна ломать сохранение продаж.
@@ -2848,7 +2858,7 @@ window.pgShopReport=async function(date){
     else if(row.send_requested_at)
       h+='<div class="alert" style="background:var(--al);color:var(--amber)">'
         +'⏳ Отчёт принят и ждёт отправки. Цифры продаж обновятся из 1С при ближайшем '
-        +'обмене — он идёт каждые 15 минут, — и сразу после этого отчёт уйдёт в Битрикс. '
+        +'обмене с 1С, и сразу после этого отчёт уйдёт в Битрикс. '
         +'Так в ленту попадёт итоговая выручка за день, а не та, что была на момент '
         +'заполнения.</div>';
     else
@@ -2870,7 +2880,7 @@ window.pgShopReport=async function(date){
     +(fact?'<div class="alert ai" style="font-size:12.5px">Выручка, чеки и единицы подставлены из 1С. '
       +'Править их здесь нельзя — если цифра неверна, дело в 1С.</div>'
       :'<div class="alert" style="background:var(--al);color:var(--amber);font-size:12.5px">'
-      +'Данные из 1С за этот день ещё не пришли. Обмен идёт раз в 15 минут.</div>')
+      +'Данные из 1С за этот день ещё не пришли. 1С обновляется раз в час.</div>')
     +'<div class="g3">'
     +'<div class="fg"><label class="fl">Выручка (₸)</label>'
       +'<input type="text" id="rp-rev" class="fc" value="'+fmtN(rev)+'" disabled></div>'
@@ -3105,16 +3115,38 @@ window.loadReportHist=async function(){
   else if(rptShops().length===1)q+='&shop=eq.'+encodeURIComponent(CU.shop);
   let rows=[];
   try{ rows=await schFetch(q)||[]; }catch(e){}
-  if(!rows.length){
-    body.innerHTML='<div style="color:var(--muted)">За этот месяц отчётов нет</div>';return;
-  }
   // Пропущенные дни видно сразу: отчёт, которого нет, — это тоже факт.
-  const days=daysInMk(mk), passed=Math.min(days,
-    mk===today().slice(0,7)?+today().slice(-2):days);
+  // Спрашиваем не с начала времён, а с даты, когда начали работать всерьёз:
+  // иначе список пропусков будет в основном про дни настройки, и на него
+  // перестанут смотреть.
   const shopsShown=shop?[shop]:rptShops();
-  const expect=shopsShown.length*passed;
+  const from=[mk+'-01',(PARAMS.reportsFrom||'2026-08-10')].sort().pop();
+  const last=mk+'-'+String(daysInMk(mk)).padStart(2,'0');
+  const till=[last,today()].sort()[0];
+  const want=[];
+  for(let d=from;d<=till;d=schAddDays(d,1))want.push(d);
+  const have=new Set((rows||[]).map(r=>r.shop+'|'+normDate(r.date)));
+  const missBy={};
+  shopsShown.forEach(sh=>{
+    const m=want.filter(d=>!have.has(sh+'|'+d));
+    if(m.length)missBy[sh]=m;
+  });
+  const missTotal=Object.values(missBy).reduce((a,b)=>a+b.length,0);
+  const expect=shopsShown.length*want.length;
 
-  let h='<div class="g4" style="margin-bottom:1rem">'
+  let miss='';
+  if(missTotal){
+    miss='<div class="alert" style="background:var(--al);color:var(--amber);display:block">'
+      +'📋 Отчётов не хватает: <b>'+missTotal+'</b>'
+      +(want.length?' (считаем с '+from+')':'')+'. '
+      +Object.keys(missBy).map(sh=>esc(sh)+' — '+schDatesLabel(missBy[sh])).join('; ')
+      +'</div>';
+  }
+  if(!rows.length){
+    body.innerHTML=miss+'<div style="color:var(--muted)">За этот месяц отчётов нет</div>';return;
+  }
+
+  let h=miss+'<div class="g4" style="margin-bottom:1rem">'
     +'<div class="metric"><div class="ml">Отчётов</div><div class="mv">'+rows.length+'</div></div>'
     +'<div class="metric"><div class="ml">Ожидалось</div><div class="mv">'+expect+'</div></div>'
     +'<div class="metric"><div class="ml">Посетителей</div><div class="mv">'
@@ -4539,7 +4571,13 @@ function schRunTotal(uid){ return _schRun[uid]||{days:{},min:0,shifts:0}; }
 
 // Каждое выбранное подразделение рисуется своим блоком: таблица графика
 // у них разная по составу людей и точек, и склеить их в одну нельзя.
+// Перерисовку запускает каждая галочка. Пока идёт одна, могла начаться
+// вторая — и два прохода наперегонки писали в общий _schShop. В итоге
+// под Карагандой оказывалась тревога про астанинскую точку, а сотрудники
+// одного магазина — в блоке другого. Метка поколения гасит опоздавших.
+let _schGen=0;
 async function schRender(){
+  const gen=++_schGen;
   const host=document.getElementById('sch-all');
   if(!host) return schRenderShop();
   const list=schPicked();
@@ -4550,19 +4588,25 @@ async function schRender(){
     +'<div class="card" id="schb-'+i+'"><div class="spin" style="margin:1rem auto;display:block"></div></div>'
     +'</div>').join('');
   for(let i=0;i<list.length;i++){
+    if(gen!==_schGen)return;
     _schShop=list[i]; _schBodyId='schb-'+i; _schAlertId='scha-'+i;
-    await schRenderShop();
+    await schRenderShop(gen);
+    if(gen!==_schGen)return;
   }
   _schBodyId='sch-body'; _schAlertId='sch-alert';
 }
 
-async function schRenderShop(){
+async function schRenderShop(gen){
   const body=document.getElementById(_schBodyId),box=document.getElementById(_schAlertId);
+  // Подразделение запоминаем на входе: пока идут запросы, глобальное
+  // значение может смениться, и блок оказался бы про чужой магазин.
+  const shop=_schShop;
+  const stale=()=>gen!==undefined&&gen!==_schGen;
   if(!body)return;
   body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
-  const users=schVisibleUsers(_schShop);
+  const users=schVisibleUsers(shop);
   if(!users.length){
-    body.innerHTML='<div style="color:var(--muted)">В подразделении «'+_schShop+'» нет сотрудников.</div>';
+    body.innerHTML='<div style="color:var(--muted)">В подразделении «'+shop+'» нет сотрудников.</div>';
     if(box)box.innerHTML='';return;
   }
   try{_sch=await schLoad(_schMk,users.map(u=>u.id)); await schLoadRunners(_schMk,users);}
@@ -4613,7 +4657,8 @@ async function schRenderShop(){
       +'<td class="sch-tot">'+pc+'</td><td class="sch-tot">'+factCol+'</td></tr>';
   });
 
-  const pts=schPointsForShop(_schShop),own=schPointOfShop(_schShop),uncov=[];
+  if(stale())return;
+  const pts=schPointsForShop(shop),own=schPointOfShop(shop),uncov=[];
   pts.forEach(p=>{
     let tot=0,cells='';
     days.forEach(dt=>{
@@ -4635,7 +4680,8 @@ async function schRenderShop(){
   h+='<span style="margin-left:auto"><span class="sch-dot" style="background:var(--green)"></span>смена подтверждена продажами</span>'
     +'<span><span class="sch-dot" style="background:var(--red)"></span>план был, факта нет</span>'
     +'<span><span class="sch-dot" style="border:2px dashed var(--blue)"></span>вышел вне графика</span></div>';
-  h+=await schSignatureBar(_schMk,_schShop);
+  h+=await schSignatureBar(_schMk,shop);
+  if(stale())return;
   body.innerHTML=h;
 
   if(box){
@@ -4645,8 +4691,9 @@ async function schRenderShop(){
     const soon=future.filter(d=>d<=lim), later=future.filter(d=>d>lim);
     let h='';
     if(own&&soon.length)
-      h+='<div class="alert ae">⛔ Не закрыты ближайшие '+SCH_HORIZON_DAYS+' дней на точке «'+own.name+'»: '
-        +schDatesLabel(soon)+'. Пока не закроете — продавцы не смогут вносить продажи'
+      h+='<div class="alert" style="background:var(--al);color:var(--amber)">⚠️ Не закрыты ближайшие '
+        +SCH_HORIZON_DAYS+' дней на точке «'+own.name+'»: '
+        +schDatesLabel(soon)+'. Продажи это не останавливает, но продавец, которого нет в графике, ввести их не сможет'
         +(curMk()<SCH_ENFORCE_FROM?' (с '+schEnforceLabel()+')':'')+'.</div>';
     if(own&&later.length)
       h+='<div class="alert" style="background:var(--al);color:var(--amber)">⚠️ Дальше в месяце не закрыто: '
@@ -5320,6 +5367,28 @@ async function schUncoveredAhead(shop){
   return miss;
 }
 
+// Есть ли у человека смена в этот день. Продажи вводит тот, кто работал,
+// и если его в графике нет — оплаченный день не попадёт в табель, а табель
+// разойдётся с начислением. Раньше вместо этого останавливали весь магазин
+// из-за пустого дня у кого угодно: страдали непричастные.
+async function schGuardSelf(uid,date){
+  // Пока месяц не наступил под правило — никого не держим.
+  if(curMk()<SCH_ENFORCE_FROM)return{st:'ok'};
+  let rows;
+  // Модуль графика недоступен — не мешаем работать: выручка важнее.
+  try{
+    rows=await schFetch('/schedule?select=date,planned_point,actual_point,shift_type'
+      +'&uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date);
+  }catch(e){ return{st:'ok'}; }
+  const r=(rows||[])[0];
+  if(!r)return{st:'block',why:'нет'};
+  const t=schType(r.shift_type);
+  // Выходной и больничный — тоже «нет смены»: продаж в такой день быть
+  // не должно, а если они есть, разбираться должен управляющий.
+  if(t&&!t.counts_as_shift)return{st:'block',why:t.name.toLowerCase()};
+  return{st:'ok'};
+}
+
 // {st:'ok'|'soft'|'block', miss:[даты]}
 // Если модуль графика недоступен — всегда 'ok': поломка графика
 // не должна мешать сохранять выручку.
@@ -5327,17 +5396,19 @@ async function schGuard(shop){
   let miss=null;
   try{miss=await schUncoveredAhead(shop)}catch(e){return{st:'ok'}}
   if(!miss||!miss.length)return{st:'ok'};
-  return{st:curMk()<SCH_ENFORCE_FROM?'soft':'block',miss};
+  // Дыра в графике магазина — повод сказать, а не повод остановить продажи.
+  // Виноват в ней управляющий, а расплачивались бы продавцы.
+  return{st:'soft',miss};
 }
 // saved=false — продажи не сохранены (жёсткая блокировка)
 // saved=true  — сохранены, но график впереди дырявый (мягкий период)
 function schSayGuard(g,saved,date){
   const days=schDatesLabel(g.miss||[]);
   const txt=saved
-    ? '✓ Сохранено за '+date+'. Но график магазина не закрыт на ближайшие '
-      +SCH_HORIZON_DAYS+' дней — пусто: '+days+'. Заполните вкладку «📅 График».'
-    : '⛔ График магазина не закрыт на ближайшие '+SCH_HORIZON_DAYS+' дней. '
-      +'Никто не поставлен: '+days+'. Откройте «📅 График», проставьте смены — после этого продажи сохранятся.';
+    ? '✓ Сохранено за '+date+'. Но в графике магазина пусто на ближайшие '
+      +SCH_HORIZON_DAYS+' дней: '+days+'. Скажите управляющему — вкладка «📅 График».'
+    : '⚠️ График магазина не закрыт на ближайшие '+SCH_HORIZON_DAYS+' дней. '
+      +'Никто не поставлен: '+days+'. Продажи это не задерживает, но управляющему стоит проставить смены.';
   const m=document.getElementById('emsg');
   if(!m){alert(txt);return}
   m.style.cssText=saved?'background:var(--al);color:var(--amber)':'';
