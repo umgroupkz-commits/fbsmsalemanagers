@@ -175,6 +175,9 @@ tr:hover td{background:var(--s2)}
   <div class="layout">
     <div class="sb">
       <div class="sb-logo">FBSM</div>
+      <!-- Метка версии. Нужна, чтобы отличать «программа не умеет» от
+           «браузер держит старый файл»: без неё это неразличимо. -->
+      <div id="sb-ver" style="padding:.4rem 1rem;font-size:10.5px;color:rgba(255,255,255,.35)"></div>
       <div class="sb-user"><strong id="sb-name">—</strong><span id="sb-shop">—</span></div>
       <div id="sb-nav"></div>
       <div class="sb-bot">
@@ -209,6 +212,7 @@ function refreshShops(){
   const all=[...new Set(listed.concat(fromUsers))];
   if(all.length) SHOPS=all;
 }
+const APP_VERSION='2026-08-06 · 4';
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -640,6 +644,8 @@ function nav(fn){
 }
 
 function setupSidebar(){
+  const v=document.getElementById('sb-ver');
+  if(v) v.textContent='версия '+APP_VERSION;
   // Пункты сгруппированы: «моё» отдельно от «магазина», деньги отдельно
   // от справочников. Иначе в одном столбце вперемешку лежит своя смена,
   // чужие зарплаты и настройки — и глазу не за что зацепиться.
@@ -1357,6 +1363,7 @@ window.pgPayroll=async function(){
     +'<select id="payMk" class="fc" style="width:auto" onchange="loadPayroll()">'+monthsOpts(6)+'</select>'
     +'<button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>'
     +'<span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>'
+    +'<span id="payTiming" style="font-size:12px;color:var(--muted)" title="наведите — разбивка по этапам"></span>'
     +'<button class="btn bsm" onclick="exportPayrollExcel()" title="Экспорт всех начислений в Excel">📊 Экспорт в Excel</button>'
     +(CU.role==='admin'?'<button class="btn bsm" onclick="confirmAllShifts()" '
       +'title="Подтвердить все смены раннеров, склада и менеджера ИМ за месяц">✅ Подтвердить все смены</button>':'')
@@ -1407,8 +1414,32 @@ window._payrollRows=[]; // хранится для экспорта в Excel
 // идут одновременно и на экран попадает та, что финишировала последней, —
 // а это не обязательно выбранный месяц. Отсюда и «начисление не обновилось,
 // помогает переключить туда-обратно». Метка поколения гасит опоздавших.
+// Секундомер по этапам. Пока он есть, «долго грузится» перестаёт быть
+// ощущением и становится числом: видно, какой именно шаг съедает время.
+// Итог виден в шапке начисления, разбивка — в консоли браузера.
+let _tmr=null;
+function tmrStart(){ _tmr={t0:performance.now(),last:performance.now(),steps:[]}; }
+function tmrMark(name){
+  if(!_tmr)return;
+  const now=performance.now();
+  _tmr.steps.push([name,Math.round(now-_tmr.last)]);
+  _tmr.last=now;
+}
+function tmrEnd(){
+  if(!_tmr)return 0;
+  const total=Math.round(performance.now()-_tmr.t0);
+  console.log('Начисление: '+total+' мс = '+_tmr.steps.map(x=>x[0]+' '+x[1]).join(', '));
+  const el=document.getElementById('payTiming');
+  if(el){
+    el.textContent='загружено за '+(total/1000).toFixed(1)+' с';
+    el.title=_tmr.steps.map(x=>x[0]+': '+x[1]+' мс').join(String.fromCharCode(10));
+  }
+  _tmr=null; return total;
+}
+
 window._payGen=0;
 window.loadPayroll=async function(forceRefresh){
+  tmrStart();
   const gen=++window._payGen;
   const stale=()=>gen!==window._payGen;
   const mk=document.getElementById('payMk').value;
@@ -1426,6 +1457,7 @@ window.loadPayroll=async function(forceRefresh){
   }
   L(true);
   const bundle=await api('getBundle',{mk,needShopStats:1,needMgrParams:1,needAdjustments:1,forceRefresh:forceRefresh?1:0});
+  tmrMark('данные');
   if(stale()){L(false);return}
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   MGR_PARAMS=Object.assign({},MGR_DEFAULTS,bundle.mgrParams||{});
@@ -1442,10 +1474,12 @@ window.loadPayroll=async function(forceRefresh){
   window._payrollRows=[]; // сброс для экспорта
   // Подтянуть правки 1С по уже подтверждённым дням до того, как считать
   const resynced=await syncConfirmed(sellers.map(u=>u.id),mk);
+  tmrMark('правки 1С'+(resynced?' ('+resynced+')':''));
   if(stale())return;
   if(resynced){ _sales=(await api('getBundle',{mk,needShopStats:1})).sales; }
   // Веса смен и подписи друг от друга не зависят — незачем ждать по очереди.
   await Promise.all([schLoadWeights(mk,sellers.map(u=>u.id)), loadUnsigned(mk)]);
+  tmrMark('график');
   if(stale())return;
 
   const byShop={};
@@ -1589,9 +1623,11 @@ window.loadPayroll=async function(forceRefresh){
   // и на медленной связи это были лишние секунды на пустом месте.
   const [warn,clocks,sign]=await Promise.all([
     payrollVsSchedule(mk,sellers), runnerPayrollHtml(mk,adjMap), signatureWarnHtml(mk)]);
+  tmrMark('блоки');
   html=warn+html+streamerPayrollHtml(mk,adjMap)+clocks+sign;
   if(stale())return;
   document.getElementById('payBody').innerHTML=html;
+  tmrMark('отрисовка'); tmrEnd();
 }
 
 // ── Корректировка перед начислением (аванс/пенсия/штрафы/скорр.сумма) ──
