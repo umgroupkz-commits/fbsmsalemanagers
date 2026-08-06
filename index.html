@@ -196,9 +196,15 @@ const SUPABASE_ANON_KEY='sb_publishable_YPJerpA53QDpCgt69qB1Iw_3Ay0CaRY';
 // точек: пока они совпадали, всё работало, но новый магазин пришлось бы
 // заводить в двух местах, и однажды его завели бы в одном.
 let SHOPS=['Караганда','Алматы','Асфендиярова','Манаса','Республика'];
+// Список подразделений задаётся в «Параметрах», а не собирается из карточек
+// сотрудников. Иначе новую точку нельзя выбрать, пока в ней некому работать,
+// а работать некому, пока её нельзя выбрать. Точки из карточек добавляются
+// к списку, а не заменяют его: заведённый человек не должен потеряться.
 function refreshShops(){
-  const fromUsers=[...new Set((USERS||[]).map(u=>u.shop).filter(Boolean))];
-  if(fromUsers.length) SHOPS=fromUsers.sort((a,b)=>a.localeCompare(b));
+  const listed=String(PARAMS.shopsList||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const fromUsers=(USERS||[]).map(u=>u.shop).filter(Boolean);
+  const all=[...new Set(listed.concat(fromUsers))];
+  if(all.length) SHOPS=all.sort((a,b)=>a.localeCompare(b));
 }
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
@@ -382,9 +388,9 @@ const POSITIONS={
   store:   {label:'Кладовщик',   plural:'Кладовщики',    icon:'📦',
             mark:'clock', pay:'shift', rateKey:'storeRate',  rateDef:12500},
   immgr:   {label:'Менеджер ИМ', plural:'Менеджеры интернет-магазина', icon:'🌐',
-            mark:'clock', pay:'oklad', okladKey:'imOklad',   okladDef:500000},
+            mark:'clock', pay:'oklad', okladKey:'imOklad',   okladDef:500000, normKey:'imNorm'},
   streamer:{label:'Стример',     plural:'Стримеры',      icon:'🎥',
-            mark:'sales', pay:'oklad', okladKey:'streamOklad', okladDef:300000,
+            mark:'sales', pay:'oklad', okladKey:'streamOklad', okladDef:300000, normKey:'streamNorm',
             pctKey:'streamPct', pctDef:0.05}
 };
 // Должности, которые отмечают приход и уход. Порядок задаёт порядок блоков
@@ -398,11 +404,14 @@ const STAFF_ROLES=['seller','manager','streamer'].concat(CLOCK_ROLES);
 
 // Норма смен месяца. От неё считается оклад стримера и менеджера ИМ.
 // В коротком месяце бухгалтер меняет это одно число в параметрах.
-function okladNorm(){ return parseFloat(PARAMS.okladNorm)||22; }
+function okladNorm(role){
+  const c=role&&POSITIONS[role];
+  return (c&&parseFloat(PARAMS[c.normKey]))||parseFloat(PARAMS.okladNorm)||22;
+}
 function okladPay(shifts,role){
   const c=POSITIONS[role]; if(!c||c.pay!=='oklad')return 0;
   const ok=parseFloat(PARAMS[c.okladKey])||c.okladDef;
-  const norm=okladNorm();
+  const norm=okladNorm(role);
   return norm>0?ok/norm*shifts:0;
 }
 // Смены, вписанные бухгалтером, важнее расчётных: программа могла ошибиться,
@@ -2327,7 +2336,7 @@ function streamerPayrollHtml(mk,adjMap){
   if(!users.length)return '';
   const cfg=runnerCfg('streamer');
   let h='<div class="card"><div class="ct">'+cfg.icon+' '+cfg.plural+' — '
-    +fmt(cfg.oklad)+' оклад при норме '+fmtSh(okladNorm())+' смен и '
+    +fmt(cfg.oklad)+' оклад при норме '+fmtSh(okladNorm('streamer'))+' смен и '
     +(cfg.pct*100).toFixed(2).replace(/\.?0+$/,'')+'% от личных продаж</div>'
     +'<div class="tw-wrap"><table><tr><th>Сотрудник</th><th>Магазин</th><th>Смен</th>'
     +'<th>Продажи</th><th>Оклад</th><th>% от продаж</th><th>Начислено</th>'
@@ -2360,7 +2369,7 @@ function streamerPayrollHtml(mk,adjMap){
   });
   h+='</table></div><div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
     +'Смены считаются по дням с подтверждёнными продажами, как у продавца. '
-    +'Оклад делится на норму '+fmtSh(okladNorm())+' смен и умножается на отработанные.</div></div>';
+    +'Оклад делится на норму '+fmtSh(okladNorm('streamer'))+' смен и умножается на отработанные.</div></div>';
   return h;
 }
 
@@ -2400,7 +2409,7 @@ function clockGroupHtml(role,users,all,mk,adjMap){
   let h='<div class="card"><div class="ct">'+cfg.icon+' '+cfg.plural+' — '
     +(cfg.pay==='shift'
         ? fmt(cfg.rate)+' за смену ('+cfg.hours+' ч)'
-        : fmt(cfg.oklad)+' оклад при норме '+fmtSh(okladNorm())+' смен')+'</div>';
+        : fmt(cfg.oklad)+' оклад при норме '+fmtSh(okladNorm(role))+' смен')+'</div>';
   let waitTotal=0, waitPay=0;
   const rows=users.map(u=>{
     const T=runnerTotals(all.filter(r=>String(r.uid)===String(u.id)),role);
@@ -2631,7 +2640,7 @@ window.loadStreamZP=async function(){
     +'<div class="metric"><div class="ml">Продажи</div><div class="mv">'+fmt(sales)+'</div></div>'
     +'<div class="metric"><div class="ml">Начислено</div><div class="mv">'+fmt(Math.round(oklad+pct))+'</div></div>'
     +'</div>'
-    +'<div class="zpr"><span>Оклад ('+fmtSh(Math.round(shifts*100)/100)+' из '+fmtSh(okladNorm())+' смен)</span><b>'+fmt(Math.round(oklad))+'</b></div>'
+    +'<div class="zpr"><span>Оклад ('+fmtSh(Math.round(shifts*100)/100)+' из '+fmtSh(okladNorm('streamer'))+' смен)</span><b>'+fmt(Math.round(oklad))+'</b></div>'
     +'<div class="zpr"><span>'+(cfg.pct*100).toFixed(2).replace(/\.?0+$/,'')+'% от продаж</span><b>'+fmt(Math.round(pct))+'</b></div>'
     +'<div class="zpr"><span>Премия</span><b>'+(bonus>0?fmt(bonus):'—')+'</b></div>'
     +'<div class="zpr"><span>Аванс и удержания</span><b>'+(ded>0?'−'+fmt(ded):'—')+'</b></div>'
@@ -3338,9 +3347,10 @@ window.pgSellers=async function(){
         </div>
         <div class="fg"><label class="fl">Роль</label>
           <select id="nr" class="fc">
-            <option value="seller">Продавец</option>
-            <option value="runner">Раннер</option>
-            ${CU.role==='admin'?'<option value="manager">Управляющий</option><option value="accountant">Бухгалтер</option><option value="admin">Гл. Администратор</option>':''}
+            ${(CU.role==='admin'
+                ? ['seller','runner','whhead','store','immgr','streamer','manager','accountant','admin']
+                : ['seller','runner']
+              ).map(r=>`<option value="${r}">${ROLE_LABELS[r]||r}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -3675,36 +3685,59 @@ window.pgParams=function(){
     +'<button class="btn bp" onclick="saveRunnerParams()">Сохранить параметры раннеров</button></div>';
   document.querySelector('.cnt').insertAdjacentHTML('beforeend',runnerHtml);
 
-  // Склад, интернет-магазин и стример — одна панель на всех: у них
-  // либо цена смены, либо оклад, и разводить это по четырём экранам
-  // значит четыре раза искать, где же меняется ставка.
-  const pc=k=>PARAMS[k]!==undefined?PARAMS[k]:POSITIONS[k===
-    'whRate'?'whhead':k==='storeRate'?'store':k==='imOklad'?'immgr':'streamer'];
-  var posHtml='<div class="card" style="max-width:560px;margin-top:1rem">'
-    +'<div class="ct">Параметры ЗП — склад, интернет-магазин, стример</div>'
-    +'<div class="alert ai" style="display:block;margin-bottom:1rem">'
-    +'Склад получает за смену, как раннер. У менеджера ИМ и стримера месячный '
-    +'оклад: он делится на норму смен и умножается на отработанные. В коротком '
-    +'месяце меняйте норму — пересчитается всё разом.</div>'
-    +'<div id="pmsg-pos"></div>'
-    +'<div class="fr">'
-    +'<div class="fg"><label class="fl">Зав. складом — за смену (₸)</label>'
-    +'<input type="number" id="pos-wh" class="fc" value="'+(parseFloat(PARAMS.whRate)||15000)+'"></div>'
-    +'<div class="fg"><label class="fl">Кладовщик — за смену (₸)</label>'
-    +'<input type="number" id="pos-store" class="fc" value="'+(parseFloat(PARAMS.storeRate)||12500)+'"></div>'
-    +'</div><div class="fr">'
-    +'<div class="fg"><label class="fl">Менеджер ИМ — оклад за месяц (₸)</label>'
-    +'<input type="number" id="pos-im" class="fc" value="'+(parseFloat(PARAMS.imOklad)||500000)+'"></div>'
-    +'<div class="fg"><label class="fl">Стример — оклад за месяц (₸)</label>'
-    +'<input type="number" id="pos-stream" class="fc" value="'+(parseFloat(PARAMS.streamOklad)||300000)+'"></div>'
-    +'</div><div class="fr">'
-    +'<div class="fg"><label class="fl">Стример — доля от личных продаж</label>'
-    +'<input type="number" step="0.001" id="pos-pct" class="fc" value="'+(parseFloat(PARAMS.streamPct)||0.05)+'"></div>'
-    +'<div class="fg"><label class="fl">Норма смен в месяце (для окладов)</label>'
-    +'<input type="number" id="pos-norm" class="fc" value="'+okladNorm()+'"></div>'
-    +'</div>'
-    +'<button class="btn bp" onclick="savePosParams()">Сохранить параметры должностей</button></div>';
-  document.querySelector('.cnt').insertAdjacentHTML('beforeend',posHtml);
+  // Каждой должности — своя панель. Сегодня сетки простые, но завтра
+  // у кого-то появятся пороги или KPI, и общее окно пришлось бы разбирать
+  // по живому. Пусть лучше стоят рядом, но отдельно.
+  ['whhead','store','immgr','streamer'].forEach(function(role){
+    const c=POSITIONS[role], cf=runnerCfg(role);
+    let h='<div class="card" style="max-width:560px;margin-top:1rem">'
+      +'<div class="ct">'+c.icon+' Параметры ЗП — '+c.label+'</div>'
+      +'<div class="alert ai" style="display:block;margin-bottom:1rem;font-size:12.5px">'
+      +(c.pay==='shift'
+          ? 'Платим за отработанное время. Смена — '+cf.hours+' ч; работал меньше — '
+            +'по времени с шагом '+cf.step+' мин, больше — всё равно одна смена.'
+          : 'Месячный оклад. Он делится на норму смен и умножается на отработанные, '
+            +'поэтому в коротком месяце достаточно поменять норму.'
+            +(role==='streamer'?' Сверх оклада — доля от личных продаж.':''))
+      +'</div><div id="pmsg-'+role+'"></div><div class="fr">';
+    if(c.pay==='shift'){
+      h+='<div class="fg"><label class="fl">Оплата за смену (₸)</label>'
+        +'<input type="number" id="pp-'+role+'-rate" class="fc" value="'+cf.rate+'"></div>'
+        +'<div class="fg"><label class="fl">Выходит за час</label>'
+        +'<input type="text" class="fc" value="'+fmt(Math.round(cf.rate/cf.hours))+'" disabled></div>';
+    }else{
+      h+='<div class="fg"><label class="fl">Оклад за месяц (₸)</label>'
+        +'<input type="number" id="pp-'+role+'-oklad" class="fc" value="'+cf.oklad+'"></div>'
+        +'<div class="fg"><label class="fl">Норма смен в месяце</label>'
+        +'<input type="number" id="pp-'+role+'-norm" class="fc" value="'+okladNorm(role)+'"></div>';
+    }
+    h+='</div>';
+    if(role==='streamer'){
+      h+='<div class="fr"><div class="fg"><label class="fl">Доля от личных продаж</label>'
+        +'<input type="number" step="0.001" id="pp-streamer-pct" class="fc" value="'+cf.pct+'"></div>'
+        +'<div class="fg"><label class="fl">Это в процентах</label>'
+        +'<input type="text" class="fc" value="'+(cf.pct*100).toFixed(2).replace(/\.?0+$/,'')+'%" disabled></div></div>';
+    }
+    h+='<button class="btn bp" onclick="savePosParams(&#39;'+role+'&#39;)">Сохранить — '+c.label+'</button></div>';
+    document.querySelector('.cnt').insertAdjacentHTML('beforeend',h);
+  });
+
+  // Подразделения. Список задаётся здесь, а не собирается из сотрудников:
+  // иначе новую точку не выбрать, пока в ней некому работать.
+  var unitsHtml='<div class="card" style="max-width:560px;margin-top:1rem">'
+    +'<div class="ct">🏢 Подразделения</div>'
+    +'<div class="alert ai" style="display:block;margin-bottom:1rem;font-size:12.5px">'
+    +'По одному в строке. Неторговые — те, где не бывает продаж: они не идут '
+    +'в сводку, планы и рейтинг, но в графике и зарплате участвуют наравне.</div>'
+    +'<div id="pmsg-units"></div>'
+    +'<div class="fg"><label class="fl">Все подразделения</label>'
+    +'<textarea id="pp-units" class="fc" rows="9">'
+    +esc(SHOPS.join('\n'))+'</textarea></div>'
+    +'<div class="fg"><label class="fl">Из них неторговые</label>'
+    +'<textarea id="pp-nontrade" class="fc" rows="3">'
+    +esc(nonTradeShops().join('\n'))+'</textarea></div>'
+    +'<button class="btn bp" onclick="saveUnits()">Сохранить подразделения</button></div>';
+  document.querySelector('.cnt').insertAdjacentHTML('beforeend',unitsHtml);
 }
 
 window.saveParams=async function(){
@@ -3726,25 +3759,62 @@ window.saveParams=async function(){
 }
 
 
-window.savePosParams=async function(){
-  const m=document.getElementById('pmsg-pos');
-  const np={
-    whRate:     parseFloat(document.getElementById('pos-wh').value)||15000,
-    storeRate:  parseFloat(document.getElementById('pos-store').value)||12500,
-    imOklad:    parseFloat(document.getElementById('pos-im').value)||500000,
-    streamOklad:parseFloat(document.getElementById('pos-stream').value)||300000,
-    streamPct:  parseFloat(document.getElementById('pos-pct').value)||0.05,
-    okladNorm:  parseFloat(document.getElementById('pos-norm').value)||22
-  };
-  if(np.okladNorm<=0){ m.className='alert ae';m.textContent='Норма смен должна быть больше нуля';return; }
+window.savePosParams=async function(role){
+  const m=document.getElementById('pmsg-'+role);
+  const c=POSITIONS[role], g=id=>document.getElementById('pp-'+role+'-'+id);
+  const np={};
+  if(c.pay==='shift'){
+    np[c.rateKey]=parseFloat(g('rate').value)||c.rateDef;
+    if(np[c.rateKey]<=0){ m.className='alert ae';m.textContent='Ставка должна быть больше нуля';return; }
+  }else{
+    np[c.okladKey]=parseFloat(g('oklad').value)||c.okladDef;
+    np[c.normKey]=parseFloat(g('norm').value)||22;
+    if(np[c.normKey]<=0){ m.className='alert ae';m.textContent='Норма смен должна быть больше нуля';return; }
+  }
+  if(role==='streamer'){
+    np[c.pctKey]=parseFloat(document.getElementById('pp-streamer-pct').value)||0;
+    if(np[c.pctKey]<0||np[c.pctKey]>1){
+      m.className='alert ae';
+      m.textContent='Доля задаётся числом от 0 до 1: 0,05 — это 5%';return; }
+  }
   L(true);
   try{ await apiPost('saveParams',np); }
   catch(e){ L(false);m.className='alert ae';m.textContent='Не сохранилось: '+e.message;return; }
   PARAMS={...PARAMS,...np};
   L(false);
-  logAction('savePosParams',null,null,np);
-  m.className='alert as';m.textContent='✓ Параметры должностей сохранены';
+  logAction('savePosParams',c.label,null,np);
+  m.className='alert as';m.textContent='✓ Сохранено';
   setTimeout(()=>m.textContent='',3000);
+}
+
+// Подразделения. Убрать точку, в которой кто-то числится, нельзя: человек
+// остался бы без места, а его смены — без магазина.
+window.saveUnits=async function(){
+  const m=document.getElementById('pmsg-units');
+  const clean=s=>s.split(/[\n,]/).map(x=>x.trim()).filter(Boolean);
+  const units=[...new Set(clean(document.getElementById('pp-units').value))];
+  const nont=[...new Set(clean(document.getElementById('pp-nontrade').value))];
+  if(!units.length){ m.className='alert ae';m.textContent='Список не может быть пустым';return; }
+  const busy=[...new Set(USERS.map(u=>u.shop).filter(Boolean))].filter(s=>units.indexOf(s)<0);
+  if(busy.length){
+    m.className='alert ae';
+    m.textContent='Нельзя убрать: там числятся люди — '+busy.join(', ');return;
+  }
+  const stray=nont.filter(s=>units.indexOf(s)<0);
+  if(stray.length){
+    m.className='alert ae';
+    m.textContent='В неторговых указано то, чего нет в списке: '+stray.join(', ');return;
+  }
+  const np={shopsList:units.join(','),nonTradeShops:nont.join(',')};
+  L(true);
+  try{ await apiPost('saveParams',np); }
+  catch(e){ L(false);m.className='alert ae';m.textContent='Не сохранилось: '+e.message;return; }
+  PARAMS={...PARAMS,...np}; refreshShops();
+  L(false);
+  logAction('saveUnits',null,null,np);
+  m.className='alert as';
+  m.textContent='✓ Подразделений: '+units.length+', из них неторговых: '+nont.length;
+  setTimeout(()=>m.textContent='',4000);
 }
 
 window.saveRunnerParams=async function(){
