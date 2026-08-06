@@ -1,0 +1,42 @@
+# Выкладка на GitHub Pages.
+#
+# Старый встроенный сборщик Pages начал падать без объяснений — «Page build
+# failed» и всё. При этом он молча продолжает раздавать предыдущую версию,
+# так что об отказе никто не узнаёт, пока не полезет смотреть.
+#
+# Здесь ничего не собирается: программа — один статический файл. Мы просто
+# берём содержимое репозитория и публикуем его. Отказ такой выкладки виден
+# сразу, во вкладке Actions, и его можно прочитать.
+
+name: Публикация на Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Выкладываем по одной за раз; лишние запуски в очереди отменяем —
+# в раздаче всё равно окажется последний.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deploy
+        uses: actions/deploy-pages@v4
