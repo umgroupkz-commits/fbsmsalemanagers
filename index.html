@@ -75,6 +75,12 @@ tr:hover td{background:var(--s2)}
 .alert{padding:10px 14px;border-radius:var(--rs);font-size:13px;margin-bottom:.75rem}
 .as{background:var(--gl);color:var(--green)}.ae{background:var(--rl);color:var(--red)}.ai{background:var(--bl);color:var(--bd)}
 .motiv{background:var(--bl);border:1px solid #B5D4F4;border-radius:var(--r);padding:1rem;margin-bottom:1rem;font-size:14px;color:var(--bd)}
+.nav-g{font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);
+  padding:14px 12px 5px;font-weight:700;opacity:.75}
+.nav-g:first-child{padding-top:4px}
+.rclock{font-size:38px;font-weight:700;letter-spacing:-1px;text-align:center;margin:.4rem 0}
+.rsince{text-align:center;color:var(--muted);font-size:12.5px;margin-bottom:1rem}
+.rnote{font-size:11.5px;color:var(--muted);margin-top:.6rem}
 .zpr{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--border);font-size:13px;color:var(--muted)}
 .zpr:last-child{border:none;font-weight:600;color:var(--text);font-size:14px}
 .rank{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:100px;font-size:12px;font-weight:600}
@@ -185,15 +191,15 @@ tr:hover td{background:var(--s2)}
 <script>
 const API='https://qeehxcnnuzuwskznhdyg.supabase.co/functions/v1/api';
 const SUPABASE_ANON_KEY='sb_publishable_YPJerpA53QDpCgt69qB1Iw_3Ay0CaRY';
-const SHOPS=['Караганда','Алматы','Асфендиярова','Манаса','Республика'];
-const REPORTS_URL='https://umgroupkz-commits.github.io/fbsm-reports/';
-const SHOP_TO_REPORT={
-  'Караганда':   'ГрандСтор (Караганда)',
-  'Алматы':      'Атакент (Алматы)',
-  'Асфендиярова':'Асф. (Астана)',
-  'Манаса':      'Манаса (Астана)',
-  'Республика':  'Респ. (Астана)',
-};
+// Список магазинов — один на всю программу и берётся из справочника
+// сотрудников. Раньше он был здесь константой, а в базе жил свой список
+// точек: пока они совпадали, всё работало, но новый магазин пришлось бы
+// заводить в двух местах, и однажды его завели бы в одном.
+let SHOPS=['Караганда','Алматы','Асфендиярова','Манаса','Республика'];
+function refreshShops(){
+  const fromUsers=[...new Set((USERS||[]).map(u=>u.shop).filter(Boolean))];
+  if(fromUsers.length) SHOPS=fromUsers.sort((a,b)=>a.localeCompare(b));
+}
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -220,10 +226,13 @@ async function callEdgeFn(action,data={},attempt=1){
     // Сессия кончилась или её нет — возвращаем на вход, а не показываем
     // непонятную ошибку посреди работы.
     if(j&&j.authError){ sessionLost(j.error||'Сессия истекла'); throw new Error('AUTH'); }
-    if(j.error)throw new Error(j.error);
+    // Отказ по правам — не сбой связи: повторять его бессмысленно,
+    // а человеку нужно прочитать причину, а не «сервер не отвечает».
+    if(j.error){ const err=new Error(j.error); if(r.status===403)err.denied=true; throw err; }
     return j;
   }catch(e){
     if(e&&e.message==='AUTH')throw e;
+    if(e&&e.denied){ L(false); throw e; }
     if(attempt<3){
       await delay(800*attempt);
       return callEdgeFn(action,data,attempt+1);
@@ -293,6 +302,9 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>
 // JSON внутрь HTML-атрибута onclick='...'. Апостроф в фамилии (О'Нил)
 // иначе разрывает атрибут и кнопка перестаёт работать.
 const escAttr=o=>esc(JSON.stringify(o));
+// Для подстановки простой строки в атрибут: escAttr сериализует объект
+// и в кавычки не годится.
+const escAttr2=v=>esc(String(v==null?'':v));
 
 // Проверка ввода продаж. Раньше не было никакой: проходили отрицательные
 // суммы (портили факт магазина и премию всей смене), экспонента 1e12,
@@ -351,7 +363,65 @@ function motiv(p){
 // Базовые параметры сетки продавца (использовались как магические числа
 // в старом коде — теперь одно место истины, аналогично MGR_DEFAULTS ниже).
 // Подписи ролей — одно место истины вместо четырёх копий карты.
-const ROLE_LABELS={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',accountant:'Бухгалтер'};
+const ROLE_LABELS={admin:'Гл. Админ',manager:'Управляющий',seller:'Продавец',
+  accountant:'Бухгалтер',runner:'Раннер',whhead:'Зав. складом',
+  store:'Кладовщик',immgr:'Менеджер ИМ',streamer:'Стример'};
+
+// ══ ДОЛЖНОСТИ С ОТМЕТКОЙ ВРЕМЕНИ И ОКЛАДОМ ══
+// mark — как человек отмечает день: clock — приход и уход, sales —
+//   подтверждением своих продаж, как продавец.
+// pay  — за что платим: shift — за смену по ставке, oklad — месячный
+//   оклад, делённый на норму смен и умноженный на отработанные.
+// Держим одной таблицей, чтобы пятая должность заводилась строкой здесь,
+// а не правкой в дюжине мест.
+const POSITIONS={
+  runner:  {label:'Раннер',      plural:'Раннеры',       icon:'🏃',
+            mark:'clock', pay:'shift', rateKey:'runnerRate', rateDef:6000},
+  whhead:  {label:'Зав. складом',plural:'Заведующие складом', icon:'📦',
+            mark:'clock', pay:'shift', rateKey:'whRate',     rateDef:15000},
+  store:   {label:'Кладовщик',   plural:'Кладовщики',    icon:'📦',
+            mark:'clock', pay:'shift', rateKey:'storeRate',  rateDef:12500},
+  immgr:   {label:'Менеджер ИМ', plural:'Менеджеры интернет-магазина', icon:'🌐',
+            mark:'clock', pay:'oklad', okladKey:'imOklad',   okladDef:500000},
+  streamer:{label:'Стример',     plural:'Стримеры',      icon:'🎥',
+            mark:'sales', pay:'oklad', okladKey:'streamOklad', okladDef:300000,
+            pctKey:'streamPct', pctDef:0.05}
+};
+// Должности, которые отмечают приход и уход. Порядок задаёт порядок блоков
+// в начислении.
+const CLOCK_ROLES=Object.keys(POSITIONS).filter(r=>POSITIONS[r].mark==='clock');
+// Должности, которые подтверждают продажи: продавец и стример.
+const SALES_ROLES=['seller','streamer'];
+const isClockRole=r=>CLOCK_ROLES.indexOf(r)>=0;
+// Кто вообще стоит в графике и в табеле.
+const STAFF_ROLES=['seller','manager','streamer'].concat(CLOCK_ROLES);
+
+// Норма смен месяца. От неё считается оклад стримера и менеджера ИМ.
+// В коротком месяце бухгалтер меняет это одно число в параметрах.
+function okladNorm(){ return parseFloat(PARAMS.okladNorm)||22; }
+function okladPay(shifts,role){
+  const c=POSITIONS[role]; if(!c||c.pay!=='oklad')return 0;
+  const ok=parseFloat(PARAMS[c.okladKey])||c.okladDef;
+  const norm=okladNorm();
+  return norm>0?ok/norm*shifts:0;
+}
+// Смены, вписанные бухгалтером, важнее расчётных: программа могла ошибиться,
+// а человек — забыть отметиться. Пусто — считает программа.
+function effShifts(adj,computed){
+  const v=adj&&adj.corrected_shifts;
+  return (v===null||v===undefined||v==='')?computed:(parseFloat(v)||0);
+}
+// Торговая ли точка. Склад и офис продаж не делают, и в сводке, рейтинге
+// и планах им делать нечего. Всё, чего нет в списке, торгует — так новый
+// магазин заработает сам, и забыть про него нельзя.
+function nonTradeShops(){
+  return String(PARAMS.nonTradeShops||'Склад Пушкина,Офис')
+    .split(',').map(s=>s.trim()).filter(Boolean);
+}
+const isTradeShop=sh=>nonTradeShops().indexOf(sh)<0;
+// Должность по идентификатору: смены одного человека нельзя считать
+// по ставке другого, а в общих списках роль под рукой не всегда.
+function roleOf(uid){ return ((USERS||[]).find(u=>String(u.id)===String(uid))||{}).role||'runner'; }
 // Итоги по записям продаж за период. Этот подсчёт был скопирован дословно
 // в шести местах: дашборд, история, история продавцов, рейтинг, сводка,
 // начисление. Правка в одном из них разъехалась бы с остальными.
@@ -497,6 +567,7 @@ async function init(){
   L(true);
   try{
     [USERS,PARAMS]=await Promise.all([api('getUsers'),api('getParams')]);
+    refreshShops();
     const sel=document.getElementById('lname');
     sel.innerHTML='<option value="">— выберите —</option>';
     [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{
@@ -546,34 +617,73 @@ window.doLogin=async function(){
 }
 window.doLogout=function(){CU=null;showScreen('login')}
 
-let _page='';
+let _page='',_runTimer=null;
 function nav(fn){
   _page=fn;
+  // Бегущие часы живут только на своей странице: иначе таймер
+  // продолжит тикать по невидимой разметке и будет ронять ошибки.
+  if(_runTimer){clearInterval(_runTimer);_runTimer=null}
   document.querySelectorAll('.ni').forEach(n=>n.classList.remove('active'));
   const el=document.getElementById('n-'+fn);if(el)el.classList.add('active');
 }
 
 function setupSidebar(){
-  const items=CU.role==='seller'
-    ?[{ic:'📊',l:'Дашборд',fn:'pgDash'},{ic:'➕',l:'Ввод продаж',fn:'pgEnter'},
-      {ic:'📅',l:'График',fn:'pgSchedule'},
-      {ic:'📋',l:'История',fn:'pgHist'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'}]
-    :CU.role==='manager'
-    ?[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💹',l:'Моя ЗП',fn:'pgMgrDash'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
-      {ic:'📅',l:'График',fn:'pgSchedule'},
-      {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'📖',l:'История продавцов',fn:'pgSellerHist'},
-      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📋',l:'Отчёт смены',fn:'pgOpenReport'}]
-    :CU.role==='accountant'
-    ?[{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'📅',l:'График',fn:'pgSchedule'}]
-    :[{ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
+  // Пункты сгруппированы: «моё» отдельно от «магазина», деньги отдельно
+  // от справочников. Иначе в одном столбце вперемешку лежит своя смена,
+  // чужие зарплаты и настройки — и глазу не за что зацепиться.
+  const items=isClockRole(CU.role)
+    ?[{g:'Моя работа'},
+      {ic:'🕒',l:'Смена',fn:'pgRunner'},{ic:'📋',l:'История',fn:'pgRunnerHist'},
+      {ic:'💰',l:'Моя ЗП',fn:'pgRunnerZP'},
+      {g:'Магазин'},
+      {ic:'📅',l:'График',fn:'pgSchedule'}]
+    :CU.role==='streamer'
+    ?[{g:'Моя работа'},
+      {ic:'➕',l:'Ввод продаж',fn:'pgEnter'},{ic:'📋',l:'История',fn:'pgHist'},
+      {ic:'💰',l:'Моя ЗП',fn:'pgStreamZP'},
+      {g:'Магазин'},
+      {ic:'📅',l:'График',fn:'pgSchedule'}]
+    :CU.role==='seller'
+    ?[{g:'Моя работа'},
+      {ic:'📊',l:'Дашборд',fn:'pgDash'},{ic:'➕',l:'Ввод продаж',fn:'pgEnter'},
+      {ic:'📋',l:'История',fn:'pgHist'},
+      {g:'Магазин'},
       {ic:'📅',l:'График',fn:'pgSchedule'},{ic:'🏆',l:'Рейтинг',fn:'pgRating'},
-      {ic:'📖',l:'История продавцов',fn:'pgSellerHist'},{ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
-      {ic:'👥',l:'Новые из 1С',fn:'pgQueue'},{ic:'⚙️',l:'Параметры',fn:'pgParams'}];
+      {ic:'🏪',l:'Отчёт магазина',fn:'pgShopReport'}]
+    :CU.role==='manager'
+    ?[{g:'Магазин'},
+      {ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'📈',l:'Дашборд',fn:'pgDash2'},
+      {ic:'📅',l:'График',fn:'pgSchedule'},
+      {ic:'🏆',l:'Рейтинг',fn:'pgRating'},{ic:'🏪',l:'Отчёт магазина',fn:'pgShopReport'},
+      {ic:'📚',l:'История отчётов',fn:'pgReportHist'},
+      {g:'Люди'},
+      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'📖',l:'История продавцов',fn:'pgSellerHist'},
+      {g:'Деньги'},
+      {ic:'💹',l:'Моя ЗП',fn:'pgMgrDash'},{ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'}]
+    :CU.role==='accountant'
+    ?[{g:'Деньги'},
+      {ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},
+      {g:'Магазин'},
+      {ic:'📅',l:'График',fn:'pgSchedule'}]
+    :[{g:'Магазины'},
+      {ic:'📊',l:'Сводка',fn:'pgReport'},{ic:'📈',l:'Дашборд',fn:'pgDash2'},
+      {ic:'📅',l:'График',fn:'pgSchedule'},
+      {ic:'🏆',l:'Рейтинг',fn:'pgRating'},
+      {g:'Люди'},
+      {ic:'👤',l:'Сотрудники',fn:'pgSellers'},{ic:'👥',l:'Новые из 1С',fn:'pgQueue'},
+      {ic:'📖',l:'История продавцов',fn:'pgSellerHist'},
+      {ic:'📚',l:'История отчётов',fn:'pgReportHist'},
+      {g:'Деньги'},
+      {ic:'💰',l:'Начисление ЗП',fn:'pgPayroll'},{ic:'🎯',l:'Планы',fn:'pgPlans'},
+      {ic:'⚙️',l:'Параметры',fn:'pgParams'}];
   document.getElementById('sb-nav').innerHTML=items.map(i=>
-    `<button class="ni" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:20px">${i.ic}</span>${i.l}</button>`
+    i.g?`<div class="nav-g">${i.g}</div>`
+       :`<button class="ni" id="n-${i.fn}" onclick="${i.fn}()"><span style="width:20px">${i.ic}</span>${i.l}</button>`
   ).join('');
   queueBadge();
-  if(CU.role==='seller')pgDash();
+  if(isClockRole(CU.role))pgRunner();
+  else if(CU.role==='streamer')pgEnter();
+  else if(CU.role==='seller')pgDash();
   else if(CU.role==='accountant')pgPayroll();
   else pgReport();
 }
@@ -831,8 +941,8 @@ window.pgEnter=async function(silent){
 async function syncInfo(date){
   const out={at:null,ok:true,closed:null};
   try{
-    const st=await schFetch('/sync_state?select=at,ok&key=eq.onec');
-    if(Array.isArray(st)&&st.length){ out.at=st[0].at; out.ok=st[0].ok!==false; }
+    const st=await schFetch('/sync_state?select=at,ok,src_at&key=eq.onec');
+    if(Array.isArray(st)&&st.length){ out.at=st[0].at; out.ok=st[0].ok!==false; out.srcAt=st[0].src_at||null; }
   }catch(e){}
   try{
     const d=await schFetch('/onec_days?select=is_closed&date=eq.'+date);
@@ -844,14 +954,19 @@ async function syncInfo(date){
 // Строка «данные из 1С на 19:42» + предупреждение про незакрытый день
 function syncNote(info){
   if(!info.at) return '';
-  const t=new Date(info.at);
+  // Показываем время САМОЙ 1С, а не нашего обмена. Наш ходит каждые 15 минут
+  // и потому всегда выглядит свежим, а копия 1С обновляется раз в час —
+  // выходило, что программа обещает свежие данные, которым почти час.
+  const t=new Date(info.srcAt||info.at);
   const mins=Math.round((Date.now()-t.getTime())/60000);
-  const hhmm=String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0');
-  // Обмен раз в 15 минут. Полчаса тишины — уже повод показать это явно.
-  const stale=!info.ok||mins>30;
+  const clock=String(t.getHours()).padStart(2,'0')+':'+String(t.getMinutes()).padStart(2,'0');
+  // Обмен раз в 15 минут, 1С обновляется раз в час. Два часа тишины — сбой.
+  const ours=Math.round((Date.now()-new Date(info.at).getTime())/60000);
+  const stale=!info.ok||ours>30||mins>120;
   let h='<div style="font-size:11.5px;color:var(--muted);margin-top:.6rem">'
-    +(stale?'⚠️ ':'')+'Данные из 1С на '+hhmm
-    +(stale?' — обмен давно не проходил, покажите это управляющему':'')+'</div>';
+    +(stale?'⚠️ ':'')+'Данные из 1С на '+clock
+    +(info.srcAt?' — 1С обновляет их раз в час, продажи последнего часа сюда ещё не попали':'')
+    +(stale?' · обмен давно не проходил, покажите это управляющему':'')+'</div>';
   if(info.closed===false) h+='<div style="font-size:11.5px;color:var(--amber);margin-top:.25rem">'
     +'День в 1С ещё не закрыт — сумма может дорасти. Уточнение программа '
     +'подтянет сама, переподтверждать не нужно.</div>';
@@ -933,7 +1048,7 @@ window.saveEntry=async function(){
   await apiPost('saveSale',{uid:CU.id,date,sales,checks,units,returns});
   logAction('saveSale',CU.name,date,{sales,checks,units,returns});
   // ГРАФИК: помечаем факт смены. Ошибка здесь не должна ломать сохранение продаж.
-  schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
+  schMarkActual(CU.id,date,CU.shop).catch(e=>schMarkFailed(CU.id,date,e.message));
   _sales=await api('getSales',{uid:CU.id});
   L(false);
   const m=document.getElementById('emsg');
@@ -1163,6 +1278,7 @@ window.loadReport=async function(forceRefresh){
   if(uaEl) uaEl.textContent=fmtUpdatedAt(bundle.shopStatsUpdatedAt);
   const sellers=getVisibleSellers();
   await schLoadWeights(mk,sellers.map(u=>u.id)); // ГРАФИК: коэффициенты смен
+
   const byShop={};
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
@@ -1230,6 +1346,8 @@ window.pgPayroll=async function(){
     +'<button class="btn bsm" onclick="loadPayroll(true)" title="Обновить данные из отчётов управляющих">🔄 Обновить данные</button>'
     +'<span id="payUpdatedAt" style="font-size:12px;color:var(--muted)"></span>'
     +'<button class="btn bsm" onclick="exportPayrollExcel()" title="Экспорт всех начислений в Excel">📊 Экспорт в Excel</button>'
+    +(CU.role==='admin'?'<button class="btn bsm" onclick="confirmAllShifts()" '
+      +'title="Подтвердить все смены раннеров, склада и менеджера ИМ за месяц">✅ Подтвердить все смены</button>':'')
     +'<span id="payClosed"></span>'
     +'<span style="font-size:13px;color:var(--muted)">✏️ — правка по дням · 💵 — корректировка перед начислением · 🖨️ — квиток</span>'
     +'</div><div id="payBody"><div class="spin" style="margin:2rem auto;display:block"></div></div>');
@@ -1237,10 +1355,54 @@ window.pgPayroll=async function(){
   await loadPayroll();
 }
 
+// Массовое подтверждение смен — для тех же случаев, что и массовое
+// подтверждение продаж: пока люди привыкают отмечаться, в конце месяца
+// кто-то должен закрыть хвосты одним движением. Только гл. админ.
+window.confirmAllShifts=async function(){
+  const mk=document.getElementById('payMk').value;
+  const shut=closedGuard(mk); if(shut){alert('🔒 '+shut);return}
+  let rows=[];
+  try{
+    rows=await schFetch('/runner_shifts?select=uid,date,ended_at&status=eq.pending'
+      +'&date=gte.'+mk+'-01&date=lte.'+mk+'-31')||[];
+  }catch(e){ alert('Не удалось получить смены: '+e.message); return; }
+  if(!rows.length){ alert('Смен на проверке за этот месяц нет'); return; }
+  const noEnd=rows.filter(r=>!r.ended_at).length;
+  if(!confirm('Подтвердить смен: '+rows.length+' за '+mk+'?'
+    +(noEnd?'\n\nИз них не закрыто (нет ухода): '+noEnd+' — они будут подтверждены, но оплачены нулём.':'')
+    +'\n\nКасается раннеров, склада и менеджера интернет-магазина.'))return;
+  L(true);
+  let ok=0, failed=0;
+  for(const r of rows){
+    try{
+      await schFetch('/runner_shifts?uid=eq.'+encodeURIComponent(r.uid)
+        +'&date=eq.'+normDate(r.date),
+        {method:'PATCH',body:JSON.stringify({status:'ok',
+          decided_at:new Date().toISOString(),
+          decided_by:CU.name+' (подтверждено массово)'})});
+      ok++;
+    }catch(e){ failed++; }
+  }
+  L(false);
+  logAction('confirmAllShifts',CU.name,mk,{ok,failed});
+  alert('Подтверждено смен: '+ok+(failed?'\nНе получилось: '+failed:''));
+  loadPayroll();
+}
+
 window._payrollRows=[]; // хранится для экспорта в Excel
 
+// Пока месяц считается, его можно переключить ещё раз. Тогда две загрузки
+// идут одновременно и на экран попадает та, что финишировала последней, —
+// а это не обязательно выбранный месяц. Отсюда и «начисление не обновилось,
+// помогает переключить туда-обратно». Метка поколения гасит опоздавших.
+window._payGen=0;
 window.loadPayroll=async function(forceRefresh){
+  const gen=++window._payGen;
+  const stale=()=>gen!==window._payGen;
   const mk=document.getElementById('payMk').value;
+  // Спиннер сразу: человек должен видеть, что месяц принят к работе.
+  const pb0=document.getElementById('payBody');
+  if(pb0) pb0.innerHTML='<div class="spin" style="margin:2rem auto;display:block"></div>';
   // Плашка «месяц закрыт» + кнопка. Закрывать может бухгалтер и админ —
   // те же, кто видит начисление целиком.
   const cw=document.getElementById('payClosed');
@@ -1252,6 +1414,7 @@ window.loadPayroll=async function(forceRefresh){
   }
   L(true);
   const bundle=await api('getBundle',{mk,needShopStats:1,needMgrParams:1,needAdjustments:1,forceRefresh:forceRefresh?1:0});
+  if(stale()){L(false);return}
   _sales=bundle.sales;_plans=bundle.plans;PARAMS=bundle.params;window._shopStats=bundle.shopStats;
   MGR_PARAMS=Object.assign({},MGR_DEFAULTS,bundle.mgrParams||{});
   const adjList=bundle.adjustments||[];
@@ -1267,36 +1430,39 @@ window.loadPayroll=async function(forceRefresh){
   window._payrollRows=[]; // сброс для экспорта
   // Подтянуть правки 1С по уже подтверждённым дням до того, как считать
   const resynced=await syncConfirmed(sellers.map(u=>u.id));
+  if(stale())return;
   if(resynced){ _sales=(await api('getBundle',{mk,needShopStats:1})).sales; }
   await schLoadWeights(mk,sellers.map(u=>u.id)); // ГРАФИК: коэффициенты смен
+  await loadUnsigned(mk);   // чей график за месяц никто не подписал
+  if(stale())return;
 
   const byShop={};
   sellers.forEach(u=>{
     if(!byShop[u.shop])byShop[u.shop]=[];
     const ents=getEntriesFor(u.id,mk);
     const {checks:tc,units:tu,returns:tr,net:ts}=sumEntries(ents);
-    const actualShifts=schShifts(u.id,ents);
+    const adj=adjMap[u.id]||{corrected_sales:null,advance:0,pension:0,ipn:0,vosms:0,fines:0,bonus:0,bonus_note:null};
+    const actualShifts=effShifts(adj,schShifts(u.id,ents));
     const plan=getPlan(u.id,mk);
     const ss=(window._shopStats||{})[u.shop]||{plan:0,fact:0,pct:0};
     const shopMet=ss.plan>0&&ss.fact>=ss.plan;
-    const adj=adjMap[u.id]||{corrected_sales:null,advance:0,pension:0,fines:0,bonus:0,bonus_note:null};
     const zp=calcZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,shopMet);
     // Премия, в отличие от штрафов, прибавляется к выплате.
-    const payout=zp.total-(+adj.advance||0)-(+adj.pension||0)-(+adj.fines||0)+(+adj.bonus||0);
+    const payout=zp.total-(+adj.advance||0)-(+adj.pension||0)-(+adj.ipn||0)-(+adj.vosms||0)-(+adj.fines||0)+(+adj.bonus||0);
     byShop[u.shop].push({...u,ts,tc,tu,plan,zp,actualShifts,ents,shopMet,adj,payout});
   });
 
   let html='';let grand=0;
   Object.entries(byShop).forEach(([shop,rows])=>{
     let shopZP=0;
-    html+='<div class="card"><div class="ct">'+shop+'</div>'
+    html+='<div class="card"><div class="ct">'+shop+unsignedMark(shop)+'</div>'
       +'<div class="tw-wrap"><table>'
       +'<tr><th>Продавец</th><th>Продажи</th><th>%</th><th>Смен</th><th>Оклад</th><th>% от продаж</th><th>Бонусы</th><th>Вычеты</th><th>К ВЫПЛАТЕ</th><th></th></tr>';
     rows.forEach(r=>{
       const z=r.zp;
       const commision=z.base+z.a80+z.a100+z.a140;
       const bonus=z.bMag+z.bk1+z.bk2;
-      const deductions=(+r.adj.advance||0)+(+r.adj.pension||0)+(+r.adj.fines||0);
+      const deductions=(+r.adj.advance||0)+(+r.adj.pension||0)+(+r.adj.ipn||0)+(+r.adj.vosms||0)+(+r.adj.fines||0);
       const extraBonus=+r.adj.bonus||0;
       shopZP+=r.payout;grand+=r.payout;
       const hasCorrection=r.adj.corrected_sales!==null&&r.adj.corrected_sales!==undefined;
@@ -1305,7 +1471,7 @@ window.loadPayroll=async function(forceRefresh){
         kind:'seller',
         name:r.name,role:'Продавец',shop:r.shop,shifts:r.actualShifts,
         oklad:z.oklad,pct:commision,bonus:bonus,
-        advance:+r.adj.advance||0,pension:+r.adj.pension||0,fines:+r.adj.fines||0,
+        advance:+r.adj.advance||0,pension:+r.adj.pension||0,ipn:+r.adj.ipn||0,vosms:+r.adj.vosms||0,fines:+r.adj.fines||0,
         extraBonus:+r.adj.bonus||0,bonusNote:r.adj.bonus_note||'',
         total:z.total,payout:r.payout,
         // ── исходные данные для формул в Excel ──
@@ -1358,19 +1524,20 @@ window.loadPayroll=async function(forceRefresh){
       const sellerIds=USERS.filter(u=>u.role==='seller'&&u.shop===m.shop).map(u=>u.id);
       let mtc=0,mtu=0;
       sellerIds.forEach(sid=>{getEntriesFor(sid,mk).forEach(e=>{mtc+=+e.checks;mtu+=+e.units;});});
-      const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,fines:0,bonus:0,bonus_note:null};
-      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,mgrShifts());
+      const adj=adjMap[m.id]||{corrected_sales:null,advance:0,pension:0,ipn:0,vosms:0,fines:0,bonus:0,bonus_note:null};
+      const mShifts=effShifts(adj,mgrShifts());
+      const z2=calcMgrZPCorrected(ss2.fact,mtc,mtu,adj.corrected_sales,ss2.plan,mShifts);
       const comm2=z2.base+z2.a80+z2.a100+z2.a140;
-      const mdeductions=(+adj.advance||0)+(+adj.pension||0)+(+adj.fines||0);
+      const mdeductions=(+adj.advance||0)+(+adj.pension||0)+(+adj.ipn||0)+(+adj.vosms||0)+(+adj.fines||0);
       const mExtraBonus=+adj.bonus||0;
       const mpayout=z2.total-mdeductions+mExtraBonus;
       const hasCorr=adj.corrected_sales!==null&&adj.corrected_sales!==undefined;
       const MP=MGR_PARAMS,MD=MGR_DEFAULTS;
       window._payrollRows.push({
         kind:'manager',
-        name:m.name,role:'Управляющий',shop:m.shop,shifts:mgrShifts(),
+        name:m.name,role:'Управляющий',shop:m.shop,shifts:mShifts,
         oklad:z2.oklad,pct:comm2,bonus:z2.bk1+z2.bk2,
-        advance:+adj.advance||0,pension:+adj.pension||0,fines:+adj.fines||0,
+        advance:+adj.advance||0,pension:+adj.pension||0,ipn:+adj.ipn||0,vosms:+adj.vosms||0,fines:+adj.fines||0,
         extraBonus:+adj.bonus||0,bonusNote:adj.bonus_note||'',
         total:z2.total,payout:mpayout,
         // ── исходные данные для формул в Excel ──
@@ -1391,7 +1558,7 @@ window.loadPayroll=async function(forceRefresh){
       mgrHtml+='<td><b>'+esc(m.name)+'</b>'+(hasCorr?' <span class="tag tw">✎</span>':'')+'</td><td>'+esc(m.shop)+'</td>';
       mgrHtml+='<td>'+fmt(z2.factForTiers)+'</td>';
       mgrHtml+='<td style="color:'+barCol(z2.pctUsed)+';font-weight:700">'+Math.round(z2.pctUsed*100)+'%</td>';
-      mgrHtml+='<td>'+fmtSh(mgrShifts())+'</td>';
+      mgrHtml+='<td>'+fmtSh(mShifts)+'</td>';
       mgrHtml+='<td>'+fmt(z2.oklad)+'</td>';
       mgrHtml+='<td>'+fmt(comm2)+'</td>';
       mgrHtml+='<td>'+fmt(z2.bk1+z2.bk2)+'</td>';
@@ -1399,13 +1566,18 @@ window.loadPayroll=async function(forceRefresh){
       mgrHtml+='<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(mpayout)+'</td>';
       mgrHtml+='<td style="white-space:nowrap">'
         +'<button class="btn bsm" onclick=\'openAdjust('+escAttr({uid:m.id,name:m.name,mk,realSales:ss2.fact,role:"manager"})+')\'>💵</button>'
-        +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:mgrShifts(),role:"manager"})+')\'>🖨️</button>'
+        +'<button class="btn bsm" onclick=\'openSlip('+escAttr({uid:m.id,name:m.name,shop:m.shop,mk,ts:ss2.fact,tc:mtc,tu:mtu,plan:ss2.plan,actualShifts:mShifts,role:"manager"})+')\'>🖨️</button>'
         +'</td>';
       mgrHtml+='</tr>';
     });
     mgrHtml+='</table></div></div>';
     html+=mgrHtml;
   }
+  html=await payrollVsSchedule(mk,sellers)+html;
+  html+=streamerPayrollHtml(mk,adjMap);
+  html+=await runnerPayrollHtml(mk,adjMap);
+  html+=await signatureWarnHtml(mk);
+  if(stale())return;
   document.getElementById('payBody').innerHTML=html;
 }
 
@@ -1420,9 +1592,10 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
   const zp=isMgr
     ? calcMgrZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,p)
     : calcZPCorrected(ts,tc,tu,adj.corrected_sales,plan,actualShifts,shopMet,p);
-  const advance=+adj.advance||0,pension=+adj.pension||0,fines=+adj.fines||0;
+  actualShifts=effShifts(adj,actualShifts);
+  const advance=+adj.advance||0,pension=+adj.pension||0,ipn=+adj.ipn||0,vosms=+adj.vosms||0,fines=+adj.fines||0;
   const extraBonus=+adj.bonus||0,bonusNote=adj.bonus_note||'';
-  const payout=zp.total-advance-pension-fines+extraBonus;
+  const payout=zp.total-advance-pension-ipn-vosms-fines+extraBonus;
   const avg=zp.avg,upt=zp.upt;
   const mkLbl=new Date(mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
 
@@ -1430,7 +1603,6 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
   const baseR=pctFmt(p.base),p80R=pctFmt(p.p80),p100R=pctFmt(p.p100),p140R=pctFmt(p.p140);
   const bKpiVal=fmt(parseFloat(p.bKpi)||(isMgr?20000:10000));
   const bMagVal=isMgr?null:fmt(parseFloat(p.bMag)||10000);
-  const rateLabel=isMgr?'ставка/смену':'ставка/смену';
   const oklaLbl='Оклад ('+fmtSh(actualShifts)+' смен × '+fmt(parseFloat(p.rate)||(isMgr?30000:6000))+')';
 
   let rows='';
@@ -1448,11 +1620,13 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
   if(extraBonus>0) rows+='<tr><td>Премия'+(bonusNote?' <span style="color:var(--muted);font-size:11px">('+esc(bonusNote)+')</span>':'')+'</td><td style="color:var(--green)">+'+fmt(extraBonus)+'</td></tr>';
   if(advance>0) rows+='<tr><td>Аванс</td><td style="color:var(--red)">−'+fmt(advance)+'</td></tr>';
   if(pension>0) rows+='<tr><td>Пенсионные отчисления</td><td style="color:var(--red)">−'+fmt(pension)+'</td></tr>';
+  if(ipn>0)     rows+='<tr><td>ИПН (налог на заработную плату)</td><td style="color:var(--red)">−'+fmt(ipn)+'</td></tr>';
+  if(vosms>0)   rows+='<tr><td>ВОСМС (социальные отчисления)</td><td style="color:var(--red)">−'+fmt(vosms)+'</td></tr>';
   if(fines>0)   rows+='<tr><td>Штрафы</td><td style="color:var(--red)">−'+fmt(fines)+'</td></tr>';
   rows+='<tr style="background:var(--gl)"><td><b>ИТОГО К ВЫПЛАТЕ</b></td><td><b style="font-size:16px;color:var(--blue)">'+fmt(payout)+'</b></td></tr>';
 
   const correctionNote=(adj.corrected_sales!==null&&adj.corrected_sales!==undefined)
-    ? '<div class="alert aw" style="display:block;background:var(--al);color:var(--amber);margin-bottom:10px;font-size:12px">Сумма продаж скорректирована для расчёта: '+fmt(zp.salesForTiers||zp.factForTiers)+' (реальная: '+fmt(ts)+')</div>'
+    ? '<div class="alert" style="background:var(--al);color:var(--amber);margin-bottom:10px;font-size:12px">Сумма продаж скорректирована для расчёта: '+fmt(zp.salesForTiers||zp.factForTiers)+' (реальная: '+fmt(ts)+')</div>'
     : '';
 
   // Текст для WhatsApp — та же расшифровка, что и в визуальном квитке
@@ -1476,6 +1650,8 @@ window.openSlip=async function({uid,name,shop,mk,ts,tc,tu,plan,actualShifts,shop
   if(extraBonus>0) waText+='Премия'+(bonusNote?' ('+bonusNote+')':'')+': +'+fmt(extraBonus)+'\n';
   if(advance>0) waText+='Аванс: -'+fmt(advance)+'\n';
   if(pension>0) waText+='Пенсионные: -'+fmt(pension)+'\n';
+  if(ipn>0)     waText+='ИПН: -'+fmt(ipn)+'\n';
+  if(vosms>0)   waText+='ВОСМС: -'+fmt(vosms)+'\n';
   if(fines>0)   waText+='Штрафы: -'+fmt(fines)+'\n';
   waText+='\nИТОГО К ВЫПЛАТЕ: '+fmt(payout);
 
@@ -1527,12 +1703,20 @@ window.openAdjust=async function({uid,name,mk,realSales,role}){
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
     +'<b>Корректировка: '+esc(name)+'</b>'
     +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button></div>'
-    +'<div class="alert ai" style="display:block;font-size:12px">Реальная сумма продаж: <b>'+fmt(realSales)+'</b>. '
+    // Раннеру корректировать нечего: продаж у него нет, а поле про них
+    // только сбивало бы с толку. Аванс, штрафы и премия остаются.
+    +(isClockRole(role)?'':'<div class="alert ai" style="display:block;font-size:12px">Реальная сумма продаж: <b>'+fmt(realSales)+'</b>. '
     +'Скорректированная сумма влияет только на % и бонусы по плану — KPI (ср.чек/UPT) не меняются.</div>'
     +'<div class="fg"><label class="fl">Скорректированная сумма продаж (оставь пустым — использовать реальную)</label>'
-    +'<input type="number" id="adj-sales" class="fc" placeholder="'+Math.round(realSales)+'" value="'+(adj.corrected_sales!==null&&adj.corrected_sales!==undefined?adj.corrected_sales:'')+'"></div>'
+    +'<input type="number" id="adj-sales" class="fc" placeholder="'+Math.round(realSales)+'" value="'+(adj.corrected_sales!==null&&adj.corrected_sales!==undefined?adj.corrected_sales:'')+'"></div>')
+    +'<div class="fg"><label class="fl">Смен (пусто — как посчитала программа)</label>'
+    +'<input type="number" step="0.01" id="adj-shifts" class="fc" placeholder="считает программа" value="'
+      +(adj.corrected_shifts!==null&&adj.corrected_shifts!==undefined?adj.corrected_shifts:'')+'"></div>'
+    +'<div style="border-top:1px dashed var(--border);margin:1rem 0 .75rem"></div>'
     +'<div class="fg"><label class="fl">Аванс (₸)</label><input type="number" id="adj-advance" class="fc" value="'+(adj.advance||0)+'"></div>'
     +'<div class="fg"><label class="fl">Пенсионные отчисления (₸)</label><input type="number" id="adj-pension" class="fc" value="'+(adj.pension||0)+'"></div>'
+    +'<div class="fg"><label class="fl">ИПН — налог на заработную плату (₸)</label><input type="number" id="adj-ipn" class="fc" value="'+(adj.ipn||0)+'"></div>'
+    +'<div class="fg"><label class="fl">ВОСМС — социальные отчисления (₸)</label><input type="number" id="adj-vosms" class="fc" value="'+(adj.vosms||0)+'"></div>'
     +'<div class="fg"><label class="fl">Штрафы (₸)</label><input type="number" id="adj-fines" class="fc" value="'+(adj.fines||0)+'"></div>'
     +'<div style="border-top:1px dashed var(--border);margin:1rem 0 .75rem"></div>'
     +'<div class="fg"><label class="fl">Премия (₸) <span style="color:var(--green);font-size:11px">— прибавится к выплате</span></label>'
@@ -1548,17 +1732,24 @@ window.openAdjust=async function({uid,name,mk,realSales,role}){
 window.saveAdjustClick=async function(uid,mk,btn){
   const shut=closedGuard(mk);
   if(shut){alert('🔒 '+shut);return}
-  const cs=document.getElementById('adj-sales').value;
+  // У раннера поля скорректированных продаж нет вовсе
+  const csEl=document.getElementById('adj-sales');
+  const cs=csEl?csEl.value:'';
+  const shEl=document.getElementById('adj-shifts');
+  const csh=shEl&&shEl.value!==''?parseFloat(shEl.value):null;
+  if(csh!==null&&(!isFinite(csh)||csh<0)){alert('Смены не могут быть отрицательными');return}
   const advance=parseFloat(document.getElementById('adj-advance').value)||0;
   const pension=parseFloat(document.getElementById('adj-pension').value)||0;
+  const ipn=parseFloat(document.getElementById('adj-ipn').value)||0;
+  const vosms=parseFloat(document.getElementById('adj-vosms').value)||0;
   const fines=parseFloat(document.getElementById('adj-fines').value)||0;
   const bonus=parseFloat(document.getElementById('adj-bonus').value)||0;
   const bonusNote=document.getElementById('adj-bonus-note').value.trim();
   if(bonus<0){alert('Премия не может быть отрицательной. Для удержания есть поле «Штрафы».');return}
   if(bonus>0&&!bonusNote){alert('Укажите, за что премия');return}
   L(true);
-  await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines,bonus,bonusNote});
-  logAction('saveAdjustment',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{correctedSales:cs===''?null:parseFloat(cs),advance,pension,fines,bonus,bonusNote});
+  await apiPost('saveAdjustment',{uid,mk,correctedSales:cs===''?null:parseFloat(cs),correctedShifts:csh,advance,pension,ipn,vosms,fines,bonus,bonusNote});
+  logAction('saveAdjustment',(USERS.find(u=>u.id===uid)||{}).name||uid,mk,{correctedSales:cs===''?null:parseFloat(cs),correctedShifts:csh,advance,pension,ipn,vosms,fines,bonus,bonusNote});
   L(false);
   const msg=btn.parentElement.querySelector('#adj-msg');
   msg.textContent='✓ Сохранено';msg.style.color='var(--green)';
@@ -1627,6 +1818,1512 @@ window.admSaveAll=async function(uid,btn){
 }
 
 
+
+// ══════════════════════════════════════════════════════════
+//  РАННЕР
+//  Платим за отработанное время, а не за продажи. Смена — 8 часов
+//  и стоит 6 000 ₸; отработал меньше — пропорционально с шагом
+//  15 минут, больше — всё равно одна смена.
+// ══════════════════════════════════════════════════════════
+const RUNNER_DEFAULTS={rate:6000,hours:8,step:15};
+// Длина смены и шаг округления общие для всех повременных должностей:
+// разными они не бывают, а настройка под несуществующий случай мешает.
+function runnerCfg(role){
+  const c=POSITIONS[role||'runner']||POSITIONS.runner;
+  return {
+    rate: parseFloat(PARAMS[c.rateKey])   || c.rateDef || 0,
+    oklad:parseFloat(PARAMS[c.okladKey])  || c.okladDef|| 0,
+    pct:  parseFloat(PARAMS[c.pctKey])    || c.pctDef  || 0,
+    hours:parseFloat(PARAMS.runnerHours)  || RUNNER_DEFAULTS.hours,
+    step: parseFloat(PARAMS.runnerStepMin)|| RUNNER_DEFAULTS.step,
+    pay:c.pay, mark:c.mark, label:c.label, plural:c.plural, icon:c.icon
+  };
+}
+// Минуты между отметками, округлённые к БЛИЖАЙШЕМУ шагу.
+// К ближайшему, а не вниз: опоздание на семь минут не должно стоить
+// денег, но и лишних восьми минут дарить незачем.
+function runnerMinutes(r){
+  if(!r||!r.started_at||!r.ended_at)return 0;
+  const ms=new Date(r.ended_at)-new Date(r.started_at);
+  if(!(ms>0))return 0;
+  const step=runnerCfg().step;
+  return Math.round(ms/60000/step)*step;
+}
+// Больше полной смены не платим: смена одна, сколько бы человек ни пробыл.
+function runnerShare(min){ return Math.min(1,min/(runnerCfg().hours*60)); }
+// Итог по списку смен. Раньше этот подсчёт был выписан в истории, в своей
+// ЗП, в начислении и в графике — четыре копии одной арифметики про деньги.
+function runnerTotals(rows,role){
+  const cfg=runnerCfg(role);
+  const t={min:0,pay:0,shifts:0,full:0,part:0,waiting:0,waitPay:0,days:{}};
+  (rows||[]).forEach(r=>{
+    if(r.status==='rejected')return;
+    const m=runnerMinutes(r), sh=runnerShare(m), pay=runnerPay(m,role);
+    t.min+=m; t.pay+=pay;
+    // Окладнику день засчитывается целиком: он не почасовик, и уход на час
+    // раньше не должен стоить ему доли оклада. Почасовому — по времени.
+    // Забыл отметить уход — день всё равно его: оплата не зависит от часов,
+    // а требовать вторую кнопку под угрозой потери дня оклада — нечестно.
+    t.shifts+=cfg.pay==='shift'?sh:((m>0||r.started_at)?1:0);
+    t.days[normDate(r.date)]=m;
+    if(sh>=1)t.full++; else if(m>0)t.part++;
+    if(r.status==='pending'){t.waiting++; t.waitPay+=pay}
+  });
+  if(cfg.pay==='oklad'){ t.pay=okladPay(t.shifts,role); }
+  return t;
+}
+function runnerPay(min,role){
+  const cfg=runnerCfg(role);
+  return cfg.pay==='shift'?runnerShare(min)*cfg.rate:okladPay(min>0?1:0,role||'runner');
+}
+function hhmm(min){
+  const m=Math.max(0,Math.round(min));
+  return Math.floor(m/60)+' ч '+String(m%60).padStart(2,'0')+' мин';
+}
+function clockOf(ts){
+  if(!ts)return '—';
+  const d=new Date(ts);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+
+async function runnerFetch(uid,from,to){
+  let q='/runner_shifts?select=*&uid=eq.'+encodeURIComponent(uid);
+  if(from)q+='&date=gte.'+from;
+  if(to)  q+='&date=lte.'+to;
+  try{ return await schFetch(q+'&order=date.desc')||[]; }catch(e){ return []; }
+}
+
+window.pgRunner=async function(){
+  nav('pgRunner');setTitle('Смена');setBadge('');
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  const today_=today();
+  const rows=await runnerFetch(CU.id,schAddDays(today_,-7),today_);
+  const mine=rows.find(r=>normDate(r.date)===today_)||null;
+  // Незакрытая смена за прошлый день важнее сегодняшней кнопки: пока
+  // она висит, новую начинать нельзя — иначе два открытых дня подряд.
+  const stuck=rows.find(r=>!r.ended_at&&normDate(r.date)!==today_)||null;
+  const cfg=runnerCfg(CU.role);
+
+  if(stuck){
+    setContent('<div class="card" style="max-width:520px;border-color:var(--amber)">'
+      +'<div class="ct">⚠️ Не закрыта смена за '+dayFull(normDate(stuck.date))+'</div>'
+      +'<div class="alert" style="background:var(--al);color:var(--amber);font-size:12.5px">'
+      +'Вы начали смену в '+clockOf(stuck.started_at)+' и не завершили её. '
+      +'Закройте её, тогда можно будет начать новую.</div>'
+      +'<button class="btn bp bbl" onclick="runnerEnd(this,\''+normDate(stuck.date)+'\')">'
+      +'■ Завершить смену за '+dayLabel(normDate(stuck.date))+'</button>'
+      +'<div id="rmsg" style="margin-top:8px"></div></div>');
+    return;
+  }
+
+  let h='';
+  if(!mine){
+    h='<div class="card" style="max-width:520px">'
+      +'<div class="ct">'+dayFull(today_)+'</div>'
+      +'<div class="rclock" style="color:var(--muted)">— : —</div>'
+      +'<div class="rsince">Смена ещё не начата</div>'
+      +'<button class="btn bbl" style="background:var(--green);color:#fff;border-color:var(--green);'
+      +'padding:1.15rem;font-size:16px;font-weight:600" onclick="runnerStart(this)">▶ Начать смену</button>'
+      +'<div id="rmsg" style="margin-top:8px"></div>'
+      +'<div class="rnote">Нажмите, когда пришли. Время отметится само.</div></div>';
+  }else if(!mine.ended_at){
+    h='<div class="card" style="max-width:520px;border-color:var(--green)">'
+      +'<div class="ct">'+dayFull(today_)+'</div>'
+      +'<div class="rclock" id="rtick" style="color:var(--green)">…</div>'
+      +'<div class="rsince" id="rsince">с '+clockOf(mine.started_at)+'</div>'
+      +'<div class="zpr"><span>Полная смена с</span><b>'
+        +clockOf(new Date(new Date(mine.started_at).getTime()+cfg.hours*3600000))+'</b></div>'
+      +'<div class="zpr"><span>Заработано сейчас</span><b id="rpay">—</b></div>'
+      +'<button class="btn bbl" style="background:var(--red);color:#fff;border-color:var(--red);'
+      +'padding:1.15rem;font-size:16px;font-weight:600;margin-top:1rem" '
+      +'onclick="runnerEnd(this)">■ Завершить смену</button>'
+      +'<div id="rmsg" style="margin-top:8px"></div>'
+      +'<div class="rnote">Если забудете завершить — программа закроет смену сама '
+      +'через '+cfg.hours+' часов и отправит день управляющему на проверку.</div></div>';
+  }else{
+    const min=runnerMinutes(mine);
+    h='<div class="card" style="max-width:520px">'
+      +'<div class="ct">✓ Смена за '+dayFull(today_)+' закрыта</div>'
+      +'<div class="zpr"><span>Пришёл</span><b>'+clockOf(mine.started_at)+'</b></div>'
+      +'<div class="zpr"><span>Ушёл</span><b>'+clockOf(mine.ended_at)+'</b></div>'
+      +'<div class="zpr"><span>Отработано</span><b>'+hhmm(min)
+        +(runnerShare(min)>=1?' → полная смена':'')+'</b></div>'
+      +'<div class="zpr"><span>Начислено за день</span><b>'+fmt(Math.round(runnerPay(min,CU.role)))+'</b></div>'
+      +'<button class="btn bbl" style="margin-top:1rem" onclick="runnerEditDlg(\''+today_+'\')">'
+      +'✎ Поправить время</button>'
+      +'<div id="rmsg" style="margin-top:8px"></div>'
+      +'<div class="rnote">Правка уйдёт управляющему на проверку. В зарплату день '
+      +'попадёт сразу, но пока не подтвердят — сумма ещё может измениться.</div></div>';
+  }
+  setContent(h);
+
+  if(mine&&!mine.ended_at){
+    const tick=()=>{
+      const el=document.getElementById('rtick');
+      if(!el){clearInterval(_runTimer);_runTimer=null;return}
+      const raw=(Date.now()-new Date(mine.started_at))/60000;
+      el.textContent=hhmm(raw);
+      // Бегущую сумму округляем тем же шагом, что и при закрытии смены:
+      // иначе человек весь день видит одно число, а получит другое.
+      const pay=document.getElementById('rpay');
+      if(pay)pay.textContent=fmt(Math.round(runnerPay(Math.round(raw/cfg.step)*cfg.step,CU.role)));
+    };
+    tick();
+    _runTimer=setInterval(tick,30000);
+  }
+}
+
+window.runnerStart=async function(btn){
+  if(btn)btn.disabled=true;
+  const now=new Date().toISOString(), date=today();
+  L(true);
+  try{
+    await schFetch('/runner_shifts',{method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates'},
+      body:JSON.stringify([{uid:String(CU.id),date,started_at:now,orig_started_at:now,
+        src:'self',status:'ok',updated_at:now}])});
+  }catch(e){
+    L(false);if(btn)btn.disabled=false;
+    document.getElementById('rmsg').innerHTML='<div class="alert ae">Не удалось отметиться: '+esc(e.message)+'</div>';
+    return;
+  }
+  L(false);
+  pgRunner();
+}
+
+window.runnerEnd=async function(btn,date){
+  const d=date||today();
+  if(btn)btn.disabled=true;
+  const now=new Date().toISOString();
+  L(true);
+  try{
+    await schFetch('/runner_shifts?uid=eq.'+encodeURIComponent(CU.id)+'&date=eq.'+d,
+      {method:'PATCH',body:JSON.stringify({ended_at:now,orig_ended_at:now,updated_at:now})});
+    // Смена закрыта — в графике появляется факт, как у продавца после
+    // подтверждения продаж.
+    schMarkActual(CU.id,d,CU.shop,'runner').catch(e=>schMarkFailed(CU.id,d,e.message));
+  }catch(e){
+    L(false);if(btn)btn.disabled=false;
+    document.getElementById('rmsg').innerHTML='<div class="alert ae">Не удалось завершить: '+esc(e.message)+'</div>';
+    return;
+  }
+  L(false);
+  pgRunner();
+}
+
+
+// ── ИСТОРИЯ ВЫХОДОВ РАННЕРА ──
+// Дни, где по графику смена стояла, а отметки нет, показываем красным
+// и даём добавить: программа не знает, что человек приходил, если он
+// не нажал кнопку, — угадывать за него нельзя, а напомнить нужно.
+function runnerStatusTag(r){
+  if(r.status==='pending') return '<span class="tag tw">на проверке</span>';
+  if(r.status==='rejected')return '<span class="tag td">не засчитан</span>';
+  if(r.src==='auto')       return '<span class="tag tw">закрыто автоматом</span>';
+  if(r.src==='manager')    return '<span class="tag ts">вписал управляющий</span>';
+  return '<span class="tag ts">зачтено</span>';
+}
+
+window.pgRunnerHist=async function(){
+  nav('pgRunnerHist');setTitle('История выходов');setBadge('');
+  setContent('<div class="card"><div class="ct">Мои выходы</div>'
+    +'<select id="rhm" class="fc" style="max-width:220px;margin-bottom:1rem" onchange="loadRunnerHist()">'
+    +monthsOpts()+'</select><div id="rhbody"></div></div>');
+  loadRunnerHist();
+}
+
+window.loadRunnerHist=async function(){
+  const mk=document.getElementById('rhm').value;
+  const body=document.getElementById('rhbody');
+  body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
+  const from=mk+'-01', to=mk+'-31';
+  const rows=await runnerFetch(CU.id,from,to);
+  let plan=[];
+  try{
+    plan=await schFetch('/schedule?select=date,planned_point,actual_point&uid=eq.'
+      +encodeURIComponent(CU.id)+'&date=gte.'+from+'&date=lte.'+to)||[];
+  }catch(e){}
+
+  const byDate={};
+  rows.forEach(r=>byDate[normDate(r.date)]={row:r});
+  // День с планом, но без отметки — только если он уже прошёл: ругаться
+  // на завтрашнюю смену незачем.
+  plan.forEach(pl=>{
+    const d=normDate(pl.date);
+    if(pl.planned_point&&!byDate[d]&&d<today()) byDate[d]={missing:true};
+  });
+  const dates=Object.keys(byDate).sort().reverse();
+  if(!dates.length){body.innerHTML='<div style="color:var(--muted)">Выходов за этот месяц нет</div>';return}
+
+  const T=runnerTotals(dates.map(d=>byDate[d].row).filter(Boolean),CU.role);
+  const tMin=T.min, tPay=T.pay, tShifts=T.shifts, waiting=T.waiting;
+  const miss=dates.filter(d=>byDate[d].missing).length;
+
+  let h='';
+  if(miss) h+='<div class="alert" style="background:var(--rl);color:var(--red)">'
+    +'За '+miss+' дн. смена по графику была, а отметки нет. Добавьте время — '
+    +'управляющий подтвердит.</div>';
+  if(waiting) h+='<div class="alert" style="background:var(--al);color:var(--amber)">'
+    +'⏳ Ждут проверки управляющего: '+waiting+' дн. В зарплату они уже вошли, '
+    +'но сумма ещё может измениться.</div>';
+  h+='<div class="g4" style="margin-bottom:1rem">'
+    +'<div class="metric"><div class="ml">Смен</div><div class="mv">'+fmtSh(Math.round(tShifts*100)/100)+'</div></div>'
+    +'<div class="metric"><div class="ml">Часов</div><div class="mv">'+hhmm(tMin)+'</div></div>'
+    +'<div class="metric"><div class="ml">Начислено</div><div class="mv">'+fmt(Math.round(tPay))+'</div></div>'
+    +'<div class="metric"><div class="ml">Ставка за смену</div><div class="mv">'+fmt(runnerCfg(CU.role).rate)+'</div></div>'
+    +'</div>';
+  h+='<div class="tw-wrap"><table><tr><th>Дата</th><th>Пришёл</th><th>Ушёл</th>'
+    +'<th>Часов</th><th>Начислено</th><th>Статус</th><th></th></tr>';
+  dates.forEach(d=>{
+    const c=byDate[d];
+    if(c.missing){
+      h+='<tr style="background:var(--rl)"><td>'+dayLabel(d)+'</td>'
+        +'<td colspan="4" style="color:var(--red)">по графику смена была, отметки нет</td>'
+        +'<td></td><td><button class="btn bsm" onclick="runnerEditDlg(\''+d+'\')">+ добавить</button></td></tr>';
+      return;
+    }
+    const r=c.row, m=runnerMinutes(r);
+    const bg=r.status==='pending'?' style="background:var(--al)"'
+            :r.status==='rejected'?' style="background:var(--rl)"':'';
+    h+='<tr'+bg+'><td>'+dayLabel(d)+'</td>'
+      +'<td>'+clockOf(r.started_at)+'</td>'
+      +'<td>'+(r.ended_at?clockOf(r.ended_at):'<span style="color:var(--amber)">не закрыта</span>')+'</td>'
+      +'<td>'+(m?hhmm(m):'—')+'</td>'
+      +'<td><b>'+(r.status==='rejected'?'—':fmt(Math.round(runnerPay(m,CU.role))))+'</b></td>'
+      +'<td>'+runnerStatusTag(r)+'</td>'
+      +'<td><button class="btn bsm" onclick="runnerEditDlg(\''+d+'\')">✎</button></td></tr>';
+  });
+  h+='</table></div>';
+  h+='<div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
+    +'Смена '+runnerCfg(CU.role).hours+' ч стоит '+fmt(runnerCfg(CU.role).rate)+'. Отработал меньше — '
+    +'платим по времени с шагом '+runnerCfg(CU.role).step+' мин, больше — всё равно одна смена.</div>';
+  body.innerHTML=h;
+}
+
+// ── ПРАВКА ЗАДНИМ ЧИСЛОМ ──
+// Своё время раннер меняет сам, но каждая правка уходит управляющему.
+// Исходные отметки не затираем: управляющему нужно к чему возвращаться.
+window.runnerEditDlg=async function(date){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
+  let r=null;
+  try{
+    const rows=await schFetch('/runner_shifts?select=*&uid=eq.'+encodeURIComponent(CU.id)
+      +'&date=eq.'+date);
+    r=rows&&rows[0]||null;
+  }catch(e){}
+  const t=ts=>ts?clockOf(ts):'';
+  const ov=document.createElement('div');ov.className='ov';
+  ov.innerHTML='<div class="ovc" style="max-width:380px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
+    +'<b>'+(r?'Поправить время':'Добавить смену')+'</b>'
+    +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button></div>'
+    +'<div style="font-size:13px;color:var(--muted);margin-bottom:.75rem">'+dayFull(date)+'</div>'
+    +(r&&r.orig_started_at?'<div class="zpr"><span>Отметилось само</span><b>'
+      +clockOf(r.orig_started_at)+' – '+(r.orig_ended_at?clockOf(r.orig_ended_at):'не закрыто')
+      +'</b></div>':'')
+    +'<div class="fr" style="margin-top:.75rem">'
+    +'<div class="fg"><label class="fl">Пришёл</label>'
+    +'<input type="time" id="re-in" class="fc" value="'+t(r&&r.started_at)+'"></div>'
+    +'<div class="fg"><label class="fl">Ушёл</label>'
+    +'<input type="time" id="re-out" class="fc" value="'+t(r&&r.ended_at)+'"></div></div>'
+    +'<div class="fg"><label class="fl">Почему правите</label>'
+    +'<input type="text" id="re-note" class="fc" placeholder="забыл отметиться" '
+    +'value="'+esc(r&&r.note||'')+'"></div>'
+    +'<button class="btn bp bbl" onclick="runnerSaveEdit(\''+date+'\',this)">Отправить на проверку</button>'
+    +'<div id="re-msg" style="margin-top:8px;font-size:13px"></div>'
+    +'<div class="rnote">Управляющий увидит, что было и что стало, и подтвердит либо вернёт как было.</div>'
+    +'</div>';
+  document.body.appendChild(ov);
+}
+
+// '2026-08-04' + '09:30' → метка времени по местным часам
+function atTime(date,hm){
+  if(!hm)return null;
+  const [h,m]=hm.split(':').map(Number);
+  const p=date.split('-').map(Number);
+  return new Date(p[0],p[1]-1,p[2],h,m,0,0);
+}
+
+window.runnerSaveEdit=async function(date,btn){
+  const msg=document.getElementById('re-msg');
+  const hin=document.getElementById('re-in').value, hout=document.getElementById('re-out').value;
+  if(!hin){msg.innerHTML='<span style="color:var(--red)">Укажите время прихода</span>';return}
+  const st=atTime(date,hin);
+  let en=hout?atTime(date,hout):null;
+  // Ушёл раньше, чем пришёл — значит смена перевалила за полночь.
+  if(en&&en<=st) en=new Date(en.getTime()+86400000);
+  if(en&&(en-st)>16*3600000){
+    msg.innerHTML='<span style="color:var(--red)">Больше 16 часов — проверьте время</span>';return;
+  }
+  if(btn)btn.disabled=true;
+  L(true);
+  const now=new Date().toISOString();
+  const body={uid:String(CU.id),date,started_at:st.toISOString(),
+    ended_at:en?en.toISOString():null,src:'runner',status:'pending',
+    note:document.getElementById('re-note').value.trim()||null,
+    edited_at:now,edited_by:CU.name,updated_at:now};
+  try{
+    await schFetch('/runner_shifts',{method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify([body])});
+    if(en) schMarkActual(CU.id,date,CU.shop,'runner').catch(()=>{});
+    logAction('runnerEdit',CU.name,date,{s:hin,e:hout});
+  }catch(e){
+    L(false);if(btn)btn.disabled=false;
+    msg.innerHTML='<span style="color:var(--red)">Не удалось: '+esc(e.message)+'</span>';return;
+  }
+  L(false);
+  document.querySelectorAll('.ov').forEach(o=>o.remove());
+  if(_page==='pgRunnerHist')loadRunnerHist(); else pgRunner();
+}
+
+
+
+// Месяц подписывают, когда он закончился: подписывать выходы, которых
+// ещё не было, нечего. Текущий месяц подписать можно — бывает, что
+// человек уходит в отпуск, — но программа скажет, что рано.
+function mkEnded(mk){ return mk < today().slice(0,7); }
+
+// Подпись под графиком: её видят все, кто открывает график, а не только
+// тот, кто платит. Кнопка — у управляющего своего магазина и у админа.
+async function schSignatureBar(mk,shop){
+  if(!shop)return '';
+  const sigs=await loadSignatures(mk);
+  const g=sigs.find(x=>x.shop===shop);
+  const may=CU.role==='admin'||(CU.role==='manager'&&CU.shop===shop);
+  let h='<div class="card" style="margin-top:1rem;display:flex;align-items:center;'
+    +'justify-content:space-between;gap:1rem;flex-wrap:wrap">';
+  if(g){
+    const stale=await schChangedAfter(mk,shop,g.signed_at);
+    h+='<div><span class="tag ts">✍️ График подписан</span> <b>'+esc(g.signed_by)+'</b>, '
+      +new Date(g.signed_at).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})
+      +' '+clockOf(g.signed_at)
+      +(stale?'<div style="font-size:11.5px;color:var(--amber)">после подписи график менялся</div>':'')
+      +'</div>';
+    if(may)h+='<button class="btn bsm" onclick="schSign(\''+mk+'\',\''+shop.replace(/'/g,"")+'\',false,this)">снять подпись</button>';
+  }else{
+    h+='<div style="color:var(--amber)">График за месяц ещё никто не подписал'
+      +(mkEnded(mk)?'':'<div style="font-size:11.5px;color:var(--muted)">'
+        +'Месяц ещё идёт — обычно график подписывают 1-го числа следующего, по фактическим выходам</div>')
+      +'</div>';
+    if(may)h+='<button class="btn '+(mkEnded(mk)?'bp ':'')+'bsm" '
+      +'onclick="schSign(\''+mk+'\',\''+shop.replace(/'/g,"")+'\',true,this)">✍️ Подписать график</button>';
+  }
+  h+='</div>';
+  return h;
+}
+
+// ── ПРОВЕРКА ПРАВОК РАННЕРА ──
+// Раннер правит своё время сам, но каждая правка попадает сюда.
+// Деньги при этом не ждут: день уже в зарплате, проверка лишь решает,
+// останется он таким или изменится.
+
+
+
+// Решение управляющего. Смысл каждого:
+//   ok       — согласен с тем, что стоит сейчас
+//   revert   — вернуть время, записанное программой
+//   rejected — день не засчитывать вовсе
+window.runnerDecide=async function(uid,date,what,btn){
+  const shut=closedGuard(date);
+  if(shut){alert('🔒 '+shut);return}
+  if(what==='rejected'&&!confirm('Не засчитывать день '+dayLabel(date)+'?\n\n'
+    +'Он пропадёт из зарплаты раннера.'))return;
+  if(btn)btn.disabled=true;
+  L(true);
+  const now=new Date().toISOString();
+  let body={status:'ok',decided_at:now,decided_by:CU.name,updated_at:now};
+  if(what==='revert'){
+    let r=null;
+    try{
+      const rows=await schFetch('/runner_shifts?select=*&uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date);
+      r=rows&&rows[0];
+    }catch(e){}
+    if(!r||!r.orig_started_at){L(false);alert('Возвращать не к чему: своей отметки в этот день не было');return}
+    body.started_at=r.orig_started_at;
+    body.ended_at=r.orig_ended_at;
+    body.src='self';
+  }
+  if(what==='rejected') body.status='rejected';
+  try{
+    await schFetch('/runner_shifts?uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date,
+      {method:'PATCH',body:JSON.stringify(body)});
+    // Не засчитали день — убираем и отметку в графике, иначе смена
+    // останется закрашенной, хотя её не признали.
+    if(what==='rejected'){
+      await schFetch('/schedule?uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date
+        +'&actual_source=eq.runner',
+        {method:'PATCH',body:JSON.stringify({actual_point:null,actual_source:null})});
+    }
+    logAction('runnerDecide',uid,date,{what});
+  }catch(e){
+    L(false);if(btn)btn.disabled=false;alert('Не удалось: '+e.message);return;
+  }
+  L(false);
+  loadPayroll();
+}
+
+// «✎ своё» — управляющий вписывает, сколько человек действительно был.
+window.runnerOwnDlg=async function(uid,date){
+  let r=null;
+  try{
+    const rows=await schFetch('/runner_shifts?select=*&uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date);
+    r=rows&&rows[0];
+  }catch(e){}
+  const u=USERS.find(x=>String(x.id)===String(uid))||{name:uid};
+  const ov=document.createElement('div');ov.className='ov';
+  ov.innerHTML='<div class="ovc" style="max-width:380px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
+    +'<b>Вписать своё время</b>'
+    +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button></div>'
+    +'<div style="font-size:13px;color:var(--muted);margin-bottom:.75rem">'
+    +esc(u.name)+' · '+dayFull(date)+'</div>'
+    +(r&&r.orig_started_at?'<div class="zpr"><span>Записалось само</span><b>'
+      +clockOf(r.orig_started_at)+' – '+(r.orig_ended_at?clockOf(r.orig_ended_at):'не закрыто')+'</b></div>':'')
+    +'<div class="zpr"><span>Просит раннер</span><b>'
+      +clockOf(r&&r.started_at)+' – '+(r&&r.ended_at?clockOf(r.ended_at):'не закрыта')+'</b></div>'
+    +'<div class="fr" style="margin-top:.75rem">'
+    +'<div class="fg"><label class="fl">Пришёл</label>'
+    +'<input type="time" id="ro-in" class="fc" value="'+(r&&r.started_at?clockOf(r.started_at):'')+'"></div>'
+    +'<div class="fg"><label class="fl">Ушёл</label>'
+    +'<input type="time" id="ro-out" class="fc" value="'+(r&&r.ended_at?clockOf(r.ended_at):'')+'"></div></div>'
+    +'<button class="btn bp bbl" onclick="runnerSaveOwn(\''+uid+'\',\''+date+'\',this)">Сохранить</button>'
+    +'<div id="ro-msg" style="margin-top:8px;font-size:13px"></div></div>';
+  document.body.appendChild(ov);
+}
+
+window.runnerSaveOwn=async function(uid,date,btn){
+  const msg=document.getElementById('ro-msg');
+  const hin=document.getElementById('ro-in').value, hout=document.getElementById('ro-out').value;
+  if(!hin||!hout){msg.innerHTML='<span style="color:var(--red)">Укажите оба времени</span>';return}
+  const st=atTime(date,hin);
+  let en=atTime(date,hout);
+  if(en<=st) en=new Date(en.getTime()+86400000);
+  if(btn)btn.disabled=true;
+  L(true);
+  const now=new Date().toISOString();
+  try{
+    await schFetch('/runner_shifts?uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date,
+      {method:'PATCH',body:JSON.stringify({started_at:st.toISOString(),ended_at:en.toISOString(),
+        src:'manager',status:'ok',decided_at:now,decided_by:CU.name,updated_at:now})});
+    logAction('runnerSetTime',uid,date,{s:hin,e:hout});
+  }catch(e){
+    L(false);if(btn)btn.disabled=false;
+    msg.innerHTML='<span style="color:var(--red)">Не удалось: '+esc(e.message)+'</span>';return;
+  }
+  L(false);
+  document.querySelectorAll('.ov').forEach(o=>o.remove());
+  loadPayroll();
+}
+
+
+// ── СТРИМЕР В НАЧИСЛЕНИИ ──
+// Оклад по норме смен плюс доля от личных продаж. Ни планов, ни порогов,
+// ни KPI: условия у стримера свои, и мерить его сеткой продавца нечестно.
+function streamerPayrollHtml(mk,adjMap){
+  const users=(CU.role==='admin'||CU.role==='accountant')
+    ? USERS.filter(u=>u.role==='streamer')
+    : USERS.filter(u=>u.role==='streamer'&&u.shop===CU.shop);
+  if(!users.length)return '';
+  const cfg=runnerCfg('streamer');
+  let h='<div class="card"><div class="ct">'+cfg.icon+' '+cfg.plural+' — '
+    +fmt(cfg.oklad)+' оклад при норме '+fmtSh(okladNorm())+' смен и '
+    +(cfg.pct*100).toFixed(2).replace(/\.?0+$/,'')+'% от личных продаж</div>'
+    +'<div class="tw-wrap"><table><tr><th>Сотрудник</th><th>Магазин</th><th>Смен</th>'
+    +'<th>Продажи</th><th>Оклад</th><th>% от продаж</th><th>Начислено</th>'
+    +'<th>Премия</th><th>Удержания</th><th>К выплате</th><th></th></tr>';
+  users.forEach(u=>{
+    const ents=getEntriesFor(u.id,mk);
+    const sales=sumEntries(ents).net;
+    const adj=adjMap[u.id]||{};
+    const shifts=effShifts(adj,schShifts(u.id,ents));
+    const oklad=okladPay(shifts,'streamer');
+    const pct=cfg.pct*sales;
+    const accrued=oklad+pct;
+    const ded=(+adj.advance||0)+(+adj.pension||0)+(+adj.ipn||0)+(+adj.vosms||0)+(+adj.fines||0);
+    const bonus=+adj.bonus||0;
+    const payout=Math.round(accrued)-ded+bonus;
+    window._payrollRows.push({kind:'clock',role:cfg.label,name:u.name,shop:u.shop,
+      shifts,hours:0,accrued:Math.round(accrued),
+      advance:+adj.advance||0,pension:+adj.pension||0,ipn:+adj.ipn||0,
+      vosms:+adj.vosms||0,fines:+adj.fines||0,
+      bonus,bonusNote:adj.bonus_note||'',payout});
+    h+='<tr><td><b>'+esc(u.name)+'</b></td><td>'+esc(u.shop||'—')+'</td>'
+      +'<td>'+fmtSh(Math.round(shifts*100)/100)+'</td>'
+      +'<td>'+fmt(sales)+'</td><td>'+fmt(Math.round(oklad))+'</td>'
+      +'<td>'+fmt(Math.round(pct))+'</td><td>'+fmt(Math.round(accrued))+'</td>'
+      +'<td>'+(bonus>0?fmt(bonus):'—')+'</td>'
+      +'<td style="color:var(--red)">'+(ded>0?'−'+fmt(ded):'—')+'</td>'
+      +'<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(payout)+'</td>'
+      +'<td><button class="btn bsm" title="Корректировка" onclick=\'openAdjust('
+      +escAttr({uid:u.id,name:u.name,mk,realSales:sales,role:"streamer"})+')\'>💵</button></td></tr>';
+  });
+  h+='</table></div><div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
+    +'Смены считаются по дням с подтверждёнными продажами, как у продавца. '
+    +'Оклад делится на норму '+fmtSh(okladNorm())+' смен и умножается на отработанные.</div></div>';
+  return h;
+}
+
+// ── РАННЕРЫ В НАЧИСЛЕНИИ ──
+// Отдельным блоком, потому что сетка у них другая: ни планов, ни процентов,
+// ни KPI. Штрафы, авансы и премии — те же, что у всех.
+async function runnerPayrollHtml(mk,adjMap){
+  // Раннер, зав. складом, кладовщик и менеджер ИМ отмечаются одинаково,
+  // поэтому и считаются одним кодом. Но таблица у каждого своя: ставки
+  // разные, и складывать их в одну колонку значило бы врать.
+  const pick=r=>(CU.role==='admin'||CU.role==='accountant')
+    ? USERS.filter(u=>u.role===r)
+    : USERS.filter(u=>u.role===r&&u.shop===CU.shop);
+  const groups=CLOCK_ROLES.map(r=>({role:r,users:pick(r)})).filter(g=>g.users.length);
+  if(!groups.length)return '';
+  const runners=groups.reduce((a,g)=>a.concat(g.users),[]);
+  let all=[];
+  try{
+    all=await schFetch('/runner_shifts?select=*&uid=in.'
+      +encodeURIComponent(schInList(runners.map(u=>u.id)))
+      +'&date=gte.'+mk+'-01&date=lte.'+mk+'-31')||[];
+  }catch(e){}
+
+  let out='';
+  groups.forEach(g=>{ out+=clockGroupHtml(g.role,g.users,all,mk,adjMap); });
+  // Спорные дни — одной таблицей на всех: решать их в четырёх местах
+  // значит не решить ни в одном.
+  const pend=all.filter(r=>r.status==='pending');
+  if(pend.length&&(CU.role==='manager'||CU.role==='admin'))
+    out+='<div class="card">'+runnerPendingTableHtml(pend,runners)+'</div>';
+  return out;
+}
+
+// Одна повременная должность: таблица начисления по ней.
+function clockGroupHtml(role,users,all,mk,adjMap){
+  const cfg=runnerCfg(role);
+  let h='<div class="card"><div class="ct">'+cfg.icon+' '+cfg.plural+' — '
+    +(cfg.pay==='shift'
+        ? fmt(cfg.rate)+' за смену ('+cfg.hours+' ч)'
+        : fmt(cfg.oklad)+' оклад при норме '+fmtSh(okladNorm())+' смен')+'</div>';
+  let waitTotal=0, waitPay=0;
+  const rows=users.map(u=>{
+    const T=runnerTotals(all.filter(r=>String(r.uid)===String(u.id)),role);
+    const adj=adjMap[u.id]||{};
+    // Смены, вписанные бухгалтером, важнее расчётных.
+    const sh=effShifts(adj,T.shifts);
+    const min=T.min, wait=T.waiting;
+    const pay=cfg.pay==='shift'?sh*cfg.rate:okladPay(sh,role);
+    waitTotal+=wait; waitPay+=T.waitPay;
+    const ded=(+adj.advance||0)+(+adj.pension||0)+(+adj.ipn||0)+(+adj.vosms||0)+(+adj.fines||0);
+    const bonus=+adj.bonus||0;
+    const payout=Math.round(pay)-ded+bonus;
+    window._payrollRows.push({kind:'clock',role:cfg.label,name:u.name,shop:u.shop,
+      // Смены НЕ округляем: в Excel по ним считается формула, и 2,69
+      // вместо 2,6875 разошлось бы с программой на пятнадцать тенге.
+      shifts:sh,hours:min/60,accrued:Math.round(pay),
+      advance:+adj.advance||0,pension:+adj.pension||0,ipn:+adj.ipn||0,vosms:+adj.vosms||0,fines:+adj.fines||0,
+      bonus,bonusNote:adj.bonus_note||'',payout});
+    return {u,sh,min,pay,wait,adj,ded,bonus,payout};
+  });
+
+  if(waitTotal) h+='<div class="alert" style="background:var(--al);color:var(--amber)">'
+    +'⏳ Не подтверждено дней: <b>'+waitTotal+'</b> на '+fmt(Math.round(waitPay))+'. '
+    +'Они уже в суммах ниже — выплату не тормозим, но после проверки суммы могут измениться. '
+    +'</div>';
+
+  h+='<div class="tw-wrap"><table><tr><th>'+cfg.label+'</th><th>Магазин</th><th>Смен</th><th>Часов</th>'
+    +'<th>Начислено</th><th>Премия</th><th>Удержания</th><th>К выплате</th><th></th></tr>';
+  rows.forEach(r=>{
+    h+='<tr'+(r.wait?' style="background:var(--al)"':'')+'>'
+      +'<td><b>'+esc(r.u.name)+'</b>'
+        +(r.wait?' <span class="tag tw">'+r.wait+' дн. на проверке</span>':'')+'</td>'
+      +'<td>'+esc(r.u.shop||'—')+'</td>'
+      +'<td>'+fmtSh(Math.round(r.sh*100)/100)+'</td>'
+      +'<td>'+hhmm(r.min)+'</td>'
+      +'<td>'+fmt(Math.round(r.pay))+'</td>'
+      +'<td>'+(r.bonus>0?fmt(r.bonus):'—')+'</td>'
+      +'<td style="color:var(--red)">'+(r.ded>0?'−'+fmt(r.ded):'—')+'</td>'
+      +'<td style="font-weight:700;font-size:15px;color:var(--blue)">'+fmt(r.payout)+'</td>'
+      +'<td style="white-space:nowrap">'
+      +'<button class="btn bsm" title="Корректировка" onclick=\'openAdjust('
+        +escAttr({uid:r.u.id,name:r.u.name,mk,realSales:0,role:role})+')\'>💵</button>'
+      +'</td></tr>';
+  });
+  h+='</table></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:.75rem">'
+    +(cfg.pay==='shift'
+        ? 'Полная смена — '+cfg.hours+' ч. Отработал меньше — платим по времени с шагом '
+          +cfg.step+' мин, больше — всё равно одна смена.'
+        : 'Оклад '+fmt(cfg.oklad)+' делится на норму '+fmtSh(okladNorm())
+          +' смен и умножается на отработанные. Отмеченный день считается целым.')
+    +' Дни, которые управляющий не засчитал, в суммы не входят.</div>';
+  h+='</div>';
+  return h;
+}
+
+
+// Спорные дни раннеров: правки, добавленные задним числом и смены,
+// которые программа закрыла сама.
+function runnerPendingTableHtml(rows,runners){
+  if(!rows.length)return '';
+  const byId={}; runners.forEach(u=>byId[u.id]=u);
+  let h='<div style="border-top:1px solid var(--border);margin-top:1.25rem;padding-top:1rem">'
+    +'<div class="ct">Разобрать спорные дни</div>'
+    +'<div class="tw-wrap"><table><tr><th>Раннер</th><th>Дата</th><th>Было</th><th>Стало</th>'
+    +'<th>Часов</th><th>Что случилось</th><th></th></tr>';
+  rows.sort((a,b)=>String(b.date).localeCompare(String(a.date))).forEach(r=>{
+    const u=byId[r.uid]||{name:r.uid};
+    const d=normDate(r.date);
+    const had=r.orig_started_at
+      ? clockOf(r.orig_started_at)+' – '+(r.orig_ended_at?clockOf(r.orig_ended_at):'не закрыл')
+      : 'отметки не было';
+    const now=clockOf(r.started_at)+' – '+(r.ended_at?clockOf(r.ended_at):'не закрыта');
+    const why=r.src==='auto'?'закрыто автоматом'
+            :r.orig_started_at?'правка раннера':'добавил задним числом';
+    const min=runnerMinutes(r);
+    h+='<tr style="background:var(--al)">'
+      +'<td>'+esc(u.name)+'</td><td>'+dayLabel(d)+'</td>'
+      +'<td style="color:var(--muted);text-decoration:line-through">'+had+'</td>'
+      +'<td style="color:var(--amber);font-weight:600">'+now+'</td>'
+      +'<td>'+(min?hhmm(min):'—')+'<div style="font-size:11px;color:var(--muted)">'
+        +fmt(Math.round(runnerPay(min,roleOf(r.uid))))+'</div></td>'
+      +'<td>'+why+(r.note?'<div style="font-size:11px;color:var(--muted)">'+esc(r.note)+'</div>':'')+'</td>'
+      +'<td style="white-space:nowrap">'
+      +'<button class="btn bsm bp" title="Согласен" onclick="runnerDecide(\''+r.uid+'\',\''+d+'\',\'ok\',this)">✓</button> '
+      +(r.orig_started_at&&r.orig_ended_at
+        ?'<button class="btn bsm" title="Вернуть время, которое записалось само" '
+         +'onclick="runnerDecide(\''+r.uid+'\',\''+d+'\',\'revert\',this)">↩ как было</button> ':'')
+      +'<button class="btn bsm" title="Вписать своё время" '
+      +'onclick="runnerOwnDlg(\''+r.uid+'\',\''+d+'\')">✎ своё</button> '
+      +'<button class="btn bsm bd2" title="День не засчитать" '
+      +'onclick="runnerDecide(\''+r.uid+'\',\''+d+'\',\'rejected\',this)">✕</button>'
+      +'</td></tr>';
+  });
+  h+='</table></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-top:.6rem">'
+    +'«↩ как было» возвращает время, которое программа записала сама. '
+    +'«✎ своё» — вписать, сколько человек действительно был. '
+    +'«✕» — день не засчитывается вовсе. Любое решение попадает в журнал.</div></div>';
+  return h;
+}
+
+// ── ПОДПИСЬ ГРАФИКА ──
+// Ничего не блокирует. Нужна ровно для того, чтобы было видно,
+// смотрел ли график живой человек, прежде чем платить по нему.
+async function loadSignatures(mk){
+  try{ return await schFetch('/schedule_signatures?select=*&mk=eq.'+mk)||[]; }
+  catch(e){ return []; }
+}
+// Правка графика после подписи её не отменяет, но и молчать нельзя:
+// подпись под устаревшими данными хуже отсутствия подписи.
+async function schChangedAfter(mk,shop,since){
+  try{
+    const r=await schFetch('/schedule?select=uid&shop=eq.'+encodeURIComponent(shop)
+      +'&date=gte.'+mk+'-01&date=lte.'+mk+'-31&updated_at=gt.'+encodeURIComponent(since)+'&limit=1');
+    return Array.isArray(r)&&r.length>0;
+  }catch(e){ return false; }
+}
+
+// В начислении — только состояние подписи. Подписывают в графике, глядя
+// на клетки: подпись под столбцом сумм ничего не проверяет.
+// Кто из магазинов не подписал график за месяц. Считаем один раз
+// за отрисовку начисления: дальше эта карта нужна каждой шапке магазина.
+let _unsignedShops=null;
+async function loadUnsigned(mk){
+  _unsignedShops=null;
+  // Пока месяц идёт, подписывать нечего — и ругаться незачем.
+  if(!mkEnded(mk))return;
+  const sigs=await loadSignatures(mk);
+  const has={}; sigs.forEach(x=>has[x.shop]=true);
+  _unsignedShops={};
+  const signable=SHOPS.filter(sh=>USERS.some(u=>u.role==='manager'&&u.shop===sh));
+  signable.forEach(sh=>{if(!has[sh])_unsignedShops[sh]=true});
+}
+function unsignedMark(shop){
+  return _unsignedShops&&_unsignedShops[shop]
+    ? ' <span class="tag td" title="График за этот месяц никто не подписал">'
+      +'⚠️ график не подписан</span>' : '';
+}
+
+async function signatureWarnHtml(mk){
+  const shops=(CU.role==='manager')?[CU.shop]
+    :SHOPS.filter(sh=>USERS.some(u=>u.role==='manager'&&u.shop===sh));
+  const sigs=await loadSignatures(mk);
+  const by={}; sigs.forEach(x=>by[x.shop]=x);
+  const unsigned=shops.filter(sh=>!by[sh]);
+  let h='<div class="card"><div class="ct">✍️ Подпись графика за '
+    +new Date(mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'})+'</div>';
+  if(unsigned.length) h+='<div class="alert" style="background:var(--al);color:var(--amber)">'
+    +'⚠️ График не подписан: <b>'+unsigned.join(', ')+'</b>. '
+    +'Выплату это не задерживает, но подтвердить его кто-то должен — '
+    +'<a href="#" onclick="pgSchedule();return false" style="color:var(--bd)">открыть график →</a></div>';
+  h+='<div class="tw-wrap"><table><tr><th>Магазин</th><th>Подпись</th></tr>';
+  for(const sh of shops){
+    const g=by[sh];
+    let cell='<span style="color:var(--amber)">не подписан</span>';
+    if(g){
+      const stale=await schChangedAfter(mk,sh,g.signed_at);
+      cell='<span class="tag ts">подписан</span> '+esc(g.signed_by)+', '
+        +new Date(g.signed_at).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})
+        +' '+clockOf(g.signed_at)
+        +(stale?'<div style="font-size:11px;color:var(--amber)">после этого график менялся</div>':'');
+    }
+    h+='<tr><td>'+esc(sh)+'</td><td>'+cell+'</td></tr>';
+  }
+  h+='</table></div></div>';
+  return h;
+}
+
+window.schSign=async function(mk,shop,on,btn){
+  if(CU.role!=='manager'&&CU.role!=='admin'){alert('Подписывать может управляющий или главный администратор');return}
+  if(!on&&!confirm('Снять подпись с графика «'+shop+'»?'))return;
+  if(btn)btn.disabled=true;
+  L(true);
+  try{
+    if(on){
+      await schFetch('/schedule_signatures',{method:'POST',
+        headers:{'Prefer':'resolution=merge-duplicates'},
+        body:JSON.stringify([{mk,shop,signed_at:new Date().toISOString(),signed_by:CU.name}])});
+    }else{
+      await schFetch('/schedule_signatures?mk=eq.'+mk+'&shop=eq.'+encodeURIComponent(shop),
+        {method:'DELETE'});
+    }
+    logAction(on?'schSign':'schUnsign',null,shop,{mk});
+  }catch(e){
+    L(false);if(btn)btn.disabled=false;alert('Не удалось: '+e.message);return;
+  }
+  L(false);
+  if(_page==='pgPayroll')loadPayroll(); else pgSchedule();
+}
+
+// ── СВОЯ ЗАРПЛАТА У РАННЕРА ──
+// Ни планов, ни KPI, ни чужих цифр: сколько выходов и сколько заработал.
+window.pgRunnerZP=async function(){
+  nav('pgRunnerZP');setTitle('Моя зарплата');setBadge('');
+  setContent('<div class="card" style="max-width:520px"><div class="ct">Моя зарплата</div>'
+    +'<select id="rzm" class="fc" style="max-width:220px;margin-bottom:1rem" onchange="loadRunnerZP()">'
+    +monthsOpts()+'</select><div id="rzbody"></div></div>');
+  loadRunnerZP();
+}
+
+window.pgStreamZP=async function(){
+  nav('pgStreamZP');setTitle('Моя зарплата');setBadge('');
+  setContent('<div class="card" style="max-width:520px"><div class="ct">Моя зарплата</div>'
+    +'<select id="szm" class="fc" style="max-width:220px;margin-bottom:1rem" onchange="loadStreamZP()">'
+    +monthsOpts()+'</select><div id="szbody"></div></div>');
+  loadStreamZP();
+}
+
+window.loadStreamZP=async function(){
+  const mk=document.getElementById('szm').value;
+  const el=document.getElementById('szbody');
+  el.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
+  const bundle=await api('getBundle',{uid:CU.id,mk});
+  _sales=bundle.sales||[];PARAMS=bundle.params||PARAMS;
+  await schLoadWeights(mk,[CU.id]);
+  let adj={};
+  try{ adj=await api('getAdjustment',{uid:CU.id,mk})||{}; }catch(e){}
+  const cfg=runnerCfg('streamer');
+  const ents=getEntriesFor(CU.id,mk);
+  const sales=sumEntries(ents).net;
+  const shifts=effShifts(adj,schShifts(CU.id,ents));
+  const oklad=okladPay(shifts,'streamer'), pct=cfg.pct*sales;
+  const ded=(+adj.advance||0)+(+adj.pension||0)+(+adj.ipn||0)+(+adj.vosms||0)+(+adj.fines||0);
+  const bonus=+adj.bonus||0;
+  el.innerHTML='<div class="g3" style="margin-bottom:1rem">'
+    +'<div class="metric"><div class="ml">Смен</div><div class="mv">'+fmtSh(Math.round(shifts*100)/100)+'</div></div>'
+    +'<div class="metric"><div class="ml">Продажи</div><div class="mv">'+fmt(sales)+'</div></div>'
+    +'<div class="metric"><div class="ml">Начислено</div><div class="mv">'+fmt(Math.round(oklad+pct))+'</div></div>'
+    +'</div>'
+    +'<div class="zpr"><span>Оклад ('+fmtSh(Math.round(shifts*100)/100)+' из '+fmtSh(okladNorm())+' смен)</span><b>'+fmt(Math.round(oklad))+'</b></div>'
+    +'<div class="zpr"><span>'+(cfg.pct*100).toFixed(2).replace(/\.?0+$/,'')+'% от продаж</span><b>'+fmt(Math.round(pct))+'</b></div>'
+    +'<div class="zpr"><span>Премия</span><b>'+(bonus>0?fmt(bonus):'—')+'</b></div>'
+    +'<div class="zpr"><span>Аванс и удержания</span><b>'+(ded>0?'−'+fmt(ded):'—')+'</b></div>'
+    +'<div class="zpr" style="border:none;padding-top:.75rem">'
+    +'<span style="font-size:15px;color:var(--text)"><b>К выплате</b></span>'
+    +'<b style="font-size:19px;color:var(--blue)">'+fmt(Math.round(oklad+pct)-ded+bonus)+'</b></div>'
+    +'<div class="rnote">Смена засчитывается за день, в котором подтверждены продажи. '
+    +'Оклад делится на норму месяца и умножается на отработанные смены.</div>';
+}
+
+window.loadRunnerZP=async function(){
+  const mk=document.getElementById('rzm').value;
+  const el=document.getElementById('rzbody');
+  el.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
+  const rows=(await runnerFetch(CU.id,mk+'-01',mk+'-31')).filter(r=>r.status!=='rejected');
+  const T=runnerTotals(rows,CU.role);
+  let adj={};
+  try{ adj=await api('getAdjustment',{uid:CU.id,mk})||{}; }catch(e){}
+  // Если бухгалтер поправил смены, человек должен видеть ту же цифру,
+  // что и в ведомости. Иначе он придёт спорить о сумме, которой нет.
+  const cfgOwn=runnerCfg(CU.role);
+  const sh=effShifts(adj,T.shifts);
+  const pay=cfgOwn.pay==='shift'?sh*cfgOwn.rate:okladPay(sh,CU.role);
+  const min=T.min, full=T.full, part=T.part, wait=T.waiting;
+  const ded=(+adj.advance||0)+(+adj.pension||0)+(+adj.ipn||0)+(+adj.vosms||0)+(+adj.fines||0);
+  const bonus=+adj.bonus||0;
+  const cfg=runnerCfg(CU.role);
+
+  let h='';
+  if(wait) h+='<div class="alert" style="background:var(--al);color:var(--amber);font-size:12.5px">'
+    +'⏳ '+wait+' дн. ждут проверки управляющего. Они уже в сумме, но она ещё может измениться.</div>';
+  h+='<div class="g3" style="margin-bottom:1rem">'
+    +'<div class="metric"><div class="ml">Смен</div><div class="mv">'+fmtSh(Math.round(sh*100)/100)+'</div></div>'
+    +'<div class="metric"><div class="ml">Часов</div><div class="mv">'+hhmm(min)+'</div></div>'
+    +'<div class="metric"><div class="ml">Начислено</div><div class="mv">'+fmt(Math.round(pay))+'</div></div>'
+    +'</div>'
+    +'<div class="zpr"><span>Ставка за смену ('+cfg.hours+' ч)</span><b>'+fmt(cfg.rate)+'</b></div>'
+    +'<div class="zpr"><span>Полных смен</span><b>'+full+'</b></div>'
+    +'<div class="zpr"><span>Неполных смен</span><b>'+(part||'—')+'</b></div>'
+    +'<div class="zpr"><span>Премия</span><b>'+(bonus>0?fmt(bonus):'—')+'</b></div>'
+    +'<div class="zpr"><span>Аванс и удержания</span><b>'+(ded>0?'−'+fmt(ded):'—')+'</b></div>'
+    +'<div class="zpr" style="border:none;padding-top:.75rem">'
+    +'<span style="font-size:15px;color:var(--text)"><b>К выплате</b></span>'
+    +'<b style="font-size:19px;color:var(--blue)">'+fmt(Math.round(pay)-ded+bonus)+'</b></div>';
+  if(adj.bonus_note) h+='<div style="font-size:12px;color:var(--muted);margin-top:.5rem">'
+    +'Премия: '+esc(adj.bonus_note)+'</div>';
+  h+='<div class="rnote">Считается по вашим отметкам прихода и ухода. '
+    +'Полная смена — '+cfg.hours+' ч, меньше — по времени с шагом '+cfg.step+' мин.</div>';
+  el.innerHTML=h;
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  ОТЧЁТ МАГАЗИНА
+//  Раньше был отдельной программой и писал в Google-таблицу.
+//  Теперь живёт здесь: выручка, чеки и единицы приходят из 1С,
+//  руками остаются посетители, состав смены, задачи и чек-лист.
+// ══════════════════════════════════════════════════════════
+const RPT_SECTIONS=[
+  { id:'open', icon:'🔓', title:'Открытие магазина', color:'#1F4E79', items:[
+    { id:'open_arrival',    text:'Прибыть в магазин за 15 мин до открытия',       ph:'Время прихода: ЧЧ:ММ, состав смены: ..., ворота открыты, отметился на охране' },
+    { id:'open_appearance', text:'Проверить внешний вид сотрудников',              ph:'Все соответствуют стандарту / кто не соответствует и что сделано' },
+    { id:'open_cleanliness',text:'Уборка, чистота зала, витрин, примерочных',     ph:'Влажная уборка сделана, мусор вынесен, примерочные в порядке / замечания: ...' },
+    { id:'open_tags',       text:'Ценники, этикетки, алармы на товаре проверены', ph:'Ценники ок, алармы на вещах/обуви проверены, этикетки 50% на месте / что исправили' },
+    { id:'open_equipment',  text:'Освещение и оборудование работают',              ph:'Свет включён, ТВ/лого на кассе включены, музыка включена, всё работает / что не работало' },
+    { id:'open_cashier',    text:'Пересчёт наличных, касса открыта',              ph:'Наличных по факту: ₸ ____, касса открыта в ЧЧ:ММ, фото отправлено в группу' },
+    { id:'open_counter',    text:'Счётчик посетителей обнулён',                    ph:'Обнулён в ЧЧ:ММ' },
+  ]},
+  { id:'online', icon:'📱', title:'Онлайн и соцсети', color:'#5B3F8C', items:[
+    { id:'online_direct',   text:'Проверить Direct (TikTok / Instagram)',          ph:'Сообщений: ___, ответили на все / остались без ответа: ...' },
+    { id:'online_stories',  text:'Сторис для соцсетей сделаны',                   ph:'Опубликованы сторис: ... / не публиковали — причина: ...' },
+    { id:'online_reels',    text:'Рилс / контент опубликован (если запланировано)',ph:'Опубликован / не запланировано на сегодня' },
+    { id:'online_live',     text:'Эфир проведён (если запланировано)',             ph:'Был в ЧЧ:ММ, просмотров: ___, заказов: ___ / не запланировано' },
+    { id:'online_orders',   text:'Онлайн-заказы: разобраны, посылки подготовлены',ph:'Заказов: ___, посылок подготовлено: ___, треки высланы покупателям / заказов не было' },
+  ]},
+  { id:'day', icon:'📊', title:'Контроль в течение дня', color:'#2E75B6', items:[
+    { id:'day_service',   text:'Качество обслуживания покупателей',                ph:'Замечаний нет / что исправили' },
+    { id:'day_conflicts', text:'Конфликтные ситуации с клиентами',                 ph:'Конфликтов не было / ситуация: ..., решили: ...' },
+    { id:'day_order',     text:'Порядок в зале, глажка, выкладка актуальна',       ph:'Порядок поддерживается, глажка проведена / что требовало внимания' },
+    { id:'day_schedule',  text:'График смен и перерывы соблюдены',                 ph:'По графику / отклонения: ...' },
+  ]},
+  { id:'cash', icon:'💰', title:'Касса и финансы', color:'#1D6F42', items:[
+    { id:'cash_ops',        text:'Кассовые операции без нарушений',                ph:'Без нарушений / что было: ...' },
+    { id:'cash_collection', text:'Инкассация (если была)',                         ph:'Не было / была в ЧЧ:ММ, сумма ₸ ____, зафиксировано в журнале' },
+    { id:'cash_reconcile',  text:'Сверка кассы, X/Z-отчёт, фото в группу',        ph:'Расхождений нет, X/Z-отчёт сформирован, фото терминалов отправлено / расхождение: ...' },
+    { id:'cash_close',      text:'Смена закрыта в 1С, наличные пересчитаны',      ph:'Закрыта в ЧЧ:ММ, наличных по факту: ₸ ____, таблица в Google заполнена' },
+  ]},
+  { id:'goods', icon:'📦', title:'Товар и склад', color:'#7B3F00', items:[
+    { id:'goods_receive',  text:'Приёмка товара (если была поставка)',             ph:'Поставки не было / принято ___ ед., накладная № ___, расхождений нет/есть' },
+    { id:'goods_revision', text:'Мини-ревизия, полки склада в порядке',            ph:'Проверены позиции: ..., полки склада аккуратны, товар со склада вынесен в зал / замечания: ...' },
+    { id:'goods_display',  text:'Выкладка скорректирована при необходимости',      ph:'Изменений не требовалось / что переложили, таблички на рейлах проверены' },
+  ]},
+  { id:'close', icon:'🔒', title:'Закрытие магазина', color:'#424242', items:[
+    { id:'close_counter',  text:'Показания счётчика зафиксированы',                ph:'Посетителей за день: ____ (записано в журнал / таблицу)' },
+    { id:'close_clean',    text:'Уборка: мусор собран, качество уборки проверено', ph:'Мусор собран по залу и складу, уборка техперсонала проверена / замечания: ...' },
+    { id:'close_hall',     text:'Зал, склад, примерочные проверены перед уходом',  ph:'Всё в порядке / что устранили' },
+    { id:'close_property', text:'Оборудование выключено, магазин закрыт',          ph:'Ноутбук выключен, ТВ/лого выключены, свет выключен везде, ворота закрыты, отметился на охране' },
+  ]},
+];
+
+let _rpt={date:null,shop:null,row:null,tasks:[],returns:[],check:{}};
+
+// Факт магазина за день из обмена с 1С
+async function rptFact(shop,date){
+  try{
+    const r=await schFetch('/shop_sales?select=fact,checks,units&shop=eq.'
+      +encodeURIComponent(shop)+'&date=eq.'+date);
+    return (r&&r[0])||null;
+  }catch(e){ return null; }
+}
+// Накопление за месяц и план магазина — чтобы показать процент,
+// как показывала таблица.
+async function rptMonth(shop,date){
+  const mk=date.slice(0,7);
+  let fact=0;
+  try{
+    const rows=await schFetch('/shop_sales?select=fact&shop=eq.'+encodeURIComponent(shop)
+      +'&date=gte.'+mk+'-01&date=lte.'+date)||[];
+    rows.forEach(r=>fact+=+r.fact||0);
+  }catch(e){}
+  const plan=(_plans||[]).find(p=>p.uid==='shop_'+shop&&p.mk===mk);
+  return {fact,plan:plan?+plan.amount||0:0};
+}
+// Сколько человек по графику стоит в этот день
+function rptStaff(shop,date){
+  return USERS.filter(u=>u.shop===shop&&STAFF_ROLES.indexOf(u.role)>=0)
+    .filter(u=>{const r=_sch[u.id+'|'+date];return r&&(r.planned_point||r.actual_point)}).length;
+}
+
+window.pgShopReport=async function(date){
+  nav('pgShopReport');setTitle('Отчёт магазина');setBadge('');
+  setContent('<div style="padding:2rem;text-align:center"><div class="spin"></div></div>');
+  const shop=CU.shop, d=date||today();
+  _rpt={date:d,shop,row:null,tasks:[],returns:[],check:{}};
+
+  // всё нужное разом: сам отчёт, факт из 1С, месяц, планы и график
+  let row=null;
+  try{
+    const r=await schFetch('/shop_reports?select=*&shop=eq.'+encodeURIComponent(shop)+'&date=eq.'+d);
+    row=(r&&r[0])||null;
+  }catch(e){}
+  if(!_plans||!_plans.length){ try{_plans=await api('getPlans',{mk:d.slice(0,7)});}catch(e){} }
+  try{ await schLoadRefs(); _sch=await schLoad(d.slice(0,7),
+    USERS.filter(u=>u.shop===shop).map(u=>u.id)); }catch(e){}
+
+  const fact=await rptFact(shop,d), mon=await rptMonth(shop,d);
+  _rpt.row=row;
+  _rpt.tasks=row?(row.tasks||[]):[];
+  _rpt.returns=row?(row.returns||[]):[];
+  _rpt.check=row?(row.checklist||{}):{};
+
+  const sent=!!row;
+  const rev=row?+row.revenue:(fact?+fact.fact||0:0);
+  const chk=row?+row.checks:(fact?+fact.checks||0:0);
+  const unt=row?+row.units:(fact?+fact.units||0:0);
+  const vis=row?+row.visitors:0;
+  const staff=row?+row.staff_count:rptStaff(shop,d);
+  const closed=closedGuard(d);
+
+  let h='<div class="card" style="max-width:760px">'
+    +'<div class="ct">🏪 '+esc(shop)+' · '+dayFull(d)+'</div>';
+  if(sent){
+    if(row.bitrix_sent_at)
+      h+='<div class="alert as">✓ Отчёт заполнил '+esc(row.author_name)
+        +' · ушёл в Битрикс '+clockOf(row.bitrix_sent_at)
+        +'. Можно поправить и отправить заново.</div>';
+    else if(row.send_requested_at)
+      h+='<div class="alert" style="background:var(--al);color:var(--amber)">'
+        +'⏳ Отчёт принят и ждёт отправки. Цифры продаж обновятся из 1С при ближайшем '
+        +'обмене — он идёт каждые 15 минут, — и сразу после этого отчёт уйдёт в Битрикс. '
+        +'Так в ленту попадёт итоговая выручка за день, а не та, что была на момент '
+        +'заполнения.</div>';
+    else
+      h+='<div class="alert as">✓ Отчёт заполнил '+esc(row.author_name)
+        +'. Можно поправить и отправить заново.</div>';
+    if(row.bitrix_error)
+      h+='<div class="alert ae">Битрикс не принял отчёт: '+esc(row.bitrix_error)+'</div>';
+  }
+  if(closed) h+='<div class="alert ae">🔒 '+esc(closed)+'</div>';
+  h+='<div class="fr"><div class="fg"><label class="fl">Дата отчёта</label>'
+    +'<input type="date" id="rp-date" class="fc" value="'+d+'" max="'+today()+'" '
+    +'onchange="pgShopReport(this.value)"></div>'
+    +'<div class="fg"><label class="fl">Заполняет</label>'
+    +'<input type="text" class="fc" value="'+escAttr2(CU.name+' · '+(ROLE_LABELS[CU.role]||CU.role))+'" disabled></div></div>';
+
+  // ── цифры ──
+  h+='<div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem">'
+    +'<div class="ct">Цифры за день</div>'
+    +(fact?'<div class="alert ai" style="font-size:12.5px">Выручка, чеки и единицы подставлены из 1С. '
+      +'Править их здесь нельзя — если цифра неверна, дело в 1С.</div>'
+      :'<div class="alert" style="background:var(--al);color:var(--amber);font-size:12.5px">'
+      +'Данные из 1С за этот день ещё не пришли. Обмен идёт раз в 15 минут.</div>')
+    +'<div class="g3">'
+    +'<div class="fg"><label class="fl">Выручка (₸)</label>'
+      +'<input type="text" id="rp-rev" class="fc" value="'+fmtN(rev)+'" disabled></div>'
+    +'<div class="fg"><label class="fl">Чеков</label>'
+      +'<input type="text" id="rp-chk" class="fc" value="'+chk+'" disabled></div>'
+    +'<div class="fg"><label class="fl">Единиц товара</label>'
+      +'<input type="text" id="rp-unt" class="fc" value="'+unt+'" disabled></div></div>'
+    +'<div class="g3">'
+    +'<div class="fg"><label class="fl">Посетителей (счётчик)</label>'
+      +'<input type="number" id="rp-vis" class="fc" min="0" value="'+(vis||'')+'" '
+      +'placeholder="0" oninput="rptCalc()"></div>'
+    +'<div class="fg"><label class="fl">Сотрудников на смене</label>'
+      +'<input type="number" id="rp-staff" class="fc" min="0" value="'+staff+'"></div>'
+    +'<div class="fg"><label class="fl">Средний чек</label>'
+      +'<input type="text" id="rp-avg" class="fc" disabled></div></div>'
+    +'<div class="zpr"><span>Конверсия</span><b id="rp-conv">—</b></div>'
+    +'<div class="zpr"><span>Накоплено за месяц</span><b>'+fmt(mon.fact)+'</b></div>'
+    +'<div class="zpr"><span>План магазина</span><b>'+(mon.plan?fmt(mon.plan):'не задан')+'</b></div>'
+    +'<div class="zpr"><span>Выполнение плана</span><b style="color:'
+      +(mon.plan&&mon.fact/mon.plan>=1?'var(--green)':mon.plan&&mon.fact/mon.plan>=0.7?'var(--amber)':'var(--red)')
+      +'">'+(mon.plan?Math.round(mon.fact/mon.plan*100)+'%':'—')+'</b></div>'
+    +'<div class="fg" style="margin-top:.75rem"><label class="fl">Состав смены / комментарий</label>'
+    +'<textarea id="rp-staff-note" class="fc" rows="2" placeholder="Имена сотрудников или комментарий по смене">'
+      +esc(row&&row.staff_comment||'')+'</textarea></div></div>';
+
+  // ── чек-лист ──
+  h+='<div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem">'
+    +'<div class="ct">Чек-лист смены <span id="rp-cnt" style="font-weight:400;color:var(--muted)"></span></div>'
+    +'<div id="rp-check"></div></div>';
+
+  // ── задачи, возвраты, инциденты ──
+  h+='<div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem">'
+    +'<div class="ct">Задачи смены</div><div id="rp-tasks"></div>'
+    +'<button class="btn bsm" onclick="rptAddTask()">+ задача</button></div>'
+    +'<div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem">'
+    +'<div class="ct">Возвраты</div><div id="rp-returns"></div>'
+    +'<button class="btn bsm" onclick="rptAddReturn()">+ возврат</button></div>'
+    +'<div style="border-top:1px solid var(--border);margin-top:1rem;padding-top:1rem">'
+    +'<div class="fg"><label class="fl">Инциденты</label>'
+    +'<textarea id="rp-inc" class="fc" rows="3" placeholder="Нештатные ситуации, поломки, конфликты. Если всё спокойно — напишите: Без инцидентов">'
+      +esc(row&&row.incidents||'')+'</textarea></div>'
+    +'<button class="btn bp bbl" style="padding:1rem;font-size:15px" onclick="rptSubmit(this)">'
+      +(sent?'📤 Отправить заново':'📤 Отправить отчёт')+'</button>'
+    +'<div class="rnote">Отчёт уйдёт в Битрикс после ближайшего обмена с 1С, '
+      +'чтобы в ленту попали итоговые цифры за день.</div>'
+    +'<div id="rp-msg" style="margin-top:8px"></div>'
+    +(CU.role==='manager'
+      ?'<div class="rnote">Отправка отчёта засчитает вам смену в графике за этот день.</div>'
+      :'<div class="rnote">Смена в графике от отчёта не зависит — она падает от подтверждения ваших продаж.</div>')
+    +'</div></div>';
+  setContent(h);
+  rptRenderCheck(); rptRenderTasks(); rptRenderReturns(); rptCalc();
+}
+
+function rptCalc(){
+  const rev=parseFloat(String(document.getElementById('rp-rev').value).replace(/\s/g,''))||0;
+  const chk=parseInt(document.getElementById('rp-chk').value)||0;
+  const vis=parseInt(document.getElementById('rp-vis').value)||0;
+  document.getElementById('rp-avg').value=chk>0?fmtN(Math.round(rev/chk)):'—';
+  document.getElementById('rp-conv').textContent=vis>0?((chk/vis)*100).toFixed(1)+'%':'—';
+}
+
+function rptRenderCheck(){
+  let h='',done=0,total=0;
+  RPT_SECTIONS.forEach(sec=>{
+    h+='<div style="margin-top:.75rem;font-size:12px;font-weight:700;color:'+sec.color+'">'
+      +sec.icon+' '+esc(sec.title)+'</div>';
+    sec.items.forEach(it=>{
+      total++;
+      const st=_rpt.check[it.id]||{};
+      if(st.checked)done++;
+      h+='<div style="padding:.5rem 0;border-bottom:1px dashed var(--border)">'
+        +'<label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;font-size:13px">'
+        +'<input type="checkbox" '+(st.checked?'checked':'')+' style="margin-top:3px"'
+        +' onchange="rptCheck(\''+it.id+'\',this.checked)">'
+        +'<span>'+esc(it.text)+'</span></label>'
+        +'<input type="text" class="fc" style="margin-top:4px;font-size:12.5px" '
+        +'placeholder="'+escAttr2(it.ph)+'" value="'+escAttr2(st.note||'')+'" '
+        +'oninput="rptNote(\''+it.id+'\',this.value)"></div>';
+    });
+  });
+  document.getElementById('rp-check').innerHTML=h;
+  const c=document.getElementById('rp-cnt');
+  if(c)c.textContent='— отмечено '+done+' из '+total;
+}
+window.rptCheck=function(id,v){
+  (_rpt.check[id]=_rpt.check[id]||{}).checked=v;
+  const done=Object.values(_rpt.check).filter(x=>x.checked).length;
+  let total=0; RPT_SECTIONS.forEach(s=>total+=s.items.length);
+  const c=document.getElementById('rp-cnt');
+  if(c)c.textContent='— отмечено '+done+' из '+total;
+}
+window.rptNote=function(id,v){ (_rpt.check[id]=_rpt.check[id]||{}).note=v; }
+
+function rptRenderTasks(){
+  document.getElementById('rp-tasks').innerHTML=_rpt.tasks.map((t,i)=>
+    '<div class="fr" style="align-items:flex-end;margin-bottom:.4rem">'
+    +'<div class="fg" style="flex:2"><input type="text" class="fc" placeholder="что нужно сделать" '
+      +'value="'+escAttr2(t.text||'')+'" oninput="_rpt.tasks['+i+'].text=this.value"></div>'
+    +'<div class="fg" style="flex:2"><input type="text" class="fc" placeholder="результат" '
+      +'value="'+escAttr2(t.result||'')+'" oninput="_rpt.tasks['+i+'].result=this.value"></div>'
+    +'<div class="fg" style="flex:0 0 auto"><label style="font-size:12px;white-space:nowrap">'
+      +'<input type="checkbox" '+(t.done?'checked':'')+' onchange="_rpt.tasks['+i+'].done=this.checked"> готово</label></div>'
+    +'<button class="btn bsm bd2" onclick="_rpt.tasks.splice('+i+',1);rptRenderTasks()">✕</button></div>').join('');
+}
+window.rptAddTask=function(){ _rpt.tasks.push({text:'',done:false,result:''}); rptRenderTasks(); }
+
+function rptRenderReturns(){
+  document.getElementById('rp-returns').innerHTML=_rpt.returns.map((r,i)=>
+    '<div class="fr" style="align-items:flex-end;margin-bottom:.4rem">'
+    +'<div class="fg"><input type="number" class="fc" placeholder="сумма ₸" '
+      +'value="'+(r.sum||'')+'" oninput="_rpt.returns['+i+'].sum=this.value"></div>'
+    +'<div class="fg" style="flex:0 0 90px"><input type="number" class="fc" placeholder="шт" '
+      +'value="'+(r.qty||1)+'" oninput="_rpt.returns['+i+'].qty=this.value"></div>'
+    +'<div class="fg" style="flex:2"><input type="text" class="fc" placeholder="причина" '
+      +'value="'+escAttr2(r.reason||'')+'" oninput="_rpt.returns['+i+'].reason=this.value"></div>'
+    +'<div class="fg"><input type="text" class="fc" placeholder="обмен" '
+      +'value="'+escAttr2(r.exchange||'')+'" oninput="_rpt.returns['+i+'].exchange=this.value"></div>'
+    +'<button class="btn bsm bd2" onclick="_rpt.returns.splice('+i+',1);rptRenderReturns()">✕</button></div>').join('');
+}
+window.rptAddReturn=function(){ _rpt.returns.push({sum:'',qty:1,reason:'',exchange:''}); rptRenderReturns(); }
+
+window.rptSubmit=async function(btn){
+  const msg=document.getElementById('rp-msg');
+  const shut=closedGuard(_rpt.date);
+  if(shut){msg.className='alert ae';msg.textContent='🔒 '+shut;return}
+  const vis=parseInt(document.getElementById('rp-vis').value);
+  if(!vis&&vis!==0){
+    msg.className='alert ae';msg.textContent='Укажите посетителей — счётчик 1С не знает';
+    document.getElementById('rp-vis').focus();return;
+  }
+  if(btn){btn.disabled=true;btn.textContent='⏳ Отправка…'}
+  const rev=parseFloat(String(document.getElementById('rp-rev').value).replace(/\s/g,''))||0;
+  const body={
+    date:_rpt.date, shop:_rpt.shop,
+    author_uid:String(CU.id), author_name:CU.name, author_role:CU.role,
+    revenue:rev,
+    checks:parseInt(document.getElementById('rp-chk').value)||0,
+    units:parseInt(document.getElementById('rp-unt').value)||0,
+    visitors:vis,
+    staff_count:parseInt(document.getElementById('rp-staff').value)||0,
+    staff_comment:document.getElementById('rp-staff-note').value.trim()||null,
+    incidents:document.getElementById('rp-inc').value.trim()||null,
+    tasks:_rpt.tasks, returns:_rpt.returns, checklist:_rpt.check,
+    updated_at:new Date().toISOString(), updated_by:CU.name
+  };
+  L(true);
+  try{
+    // Отчёт не уходит в Битрикс сразу: обмен с 1С мог ещё не принести
+    // итоговые цифры дня. Ставим отметку «просили отправить», письмо
+    // уйдёт из ближайшего обмена — уже по окончательной выручке.
+    body.send_requested_at=new Date().toISOString();
+    body.send_requested_by=CU.name;
+    await schFetch('/shop_reports',{method:'POST',
+      headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify([body])});
+    // Управляющему отчёт заменяет отметку смены: своих продаж он
+    // не подтверждает, а на работе в этот день был.
+    if(CU.role==='manager') schMarkActual(CU.id,_rpt.date,CU.shop,'report').catch(()=>{});
+    logAction('shopReport',CU.name,_rpt.date,{shop:_rpt.shop});
+  }catch(e){
+    L(false);if(btn){btn.disabled=false;btn.textContent='📤 Отправить отчёт'}
+    msg.className='alert ae';msg.textContent='Не отправилось: '+e.message;return;
+  }
+  L(false);
+  pgShopReport(_rpt.date);
+}
+
+
+
+// Сторож на стыке двух учётов. Оклад считается по дням с продажами,
+// табель — по отметкам в графике. Пока они сходятся, об этом можно
+// не думать; как разойдутся — бухгалтер получит две разные цифры смен
+// и не поймёт, какой верить. Поэтому проверяем каждый раз.
+async function payrollVsSchedule(mk,sellers){
+  if(!sellers.length)return '';
+  const ids=sellers.map(u=>u.id);
+  let sch=[];
+  try{
+    sch=await schFetch('/schedule?select=uid,date&actual_point=not.is.null&uid=in.'
+      +encodeURIComponent(schInList(ids))+'&date=gte.'+mk+'-01&date=lte.'+mk+'-31')||[];
+  }catch(e){ return ''; }
+  const marked=new Set(sch.map(r=>r.uid+'|'+normDate(r.date)));
+
+  const bad=[];
+  sellers.forEach(u=>{
+    const days=getEntriesFor(u.id,mk).filter(e=>!isReturnOnly1c(e));
+    const miss=days.filter(e=>!marked.has(u.id+'|'+normDate(e.date)));
+    if(miss.length)bad.push({name:u.name,days:miss.map(e=>normDate(e.date))});
+  });
+  if(!bad.length)return '';
+
+  const total=bad.reduce((s,b)=>s+b.days.length,0);
+  return '<div class="alert" style="background:var(--al);color:var(--amber)">'
+    +'⚠️ Оплаченных дней без отметки в графике: <b>'+total+'</b>. '
+    +'В табеле их не будет, и он разойдётся с начислением. '
+    +bad.map(b=>esc(b.name)+' — '+schDatesLabel(b.days)).join('; ')
+    +'</div>';
+}
+
+// ── ИСТОРИЯ ОТЧЁТОВ ──
+// Управляющему — свой магазин, администратору — все.
+function rptShops(){
+  // Склад и офис не торгуют: пустая строка с нулями в сводке продаж
+  // только сбивает глаз.
+  return CU.role==='admin'||CU.role==='accountant'?SHOPS.filter(isTradeShop):[CU.shop];
+}
+
+window.pgReportHist=async function(){
+  nav('pgReportHist');setTitle('История отчётов');setBadge('');
+  const shops=rptShops();
+  setContent('<div class="card"><div class="ct">Отчёты магазинов</div>'
+    +'<div class="fr" style="max-width:520px">'
+    +'<div class="fg"><label class="fl">Месяц</label>'
+    +'<select id="rh-mk" class="fc" onchange="loadReportHist()">'+monthsOpts()+'</select></div>'
+    +(shops.length>1?'<div class="fg"><label class="fl">Магазин</label>'
+      +'<select id="rh-shop" class="fc" onchange="loadReportHist()">'
+      +'<option value="">все</option>'+shops.map(x=>'<option>'+esc(x)+'</option>').join('')
+      +'</select></div>':'')
+    +'</div><div id="rh-body"></div></div>');
+  loadReportHist();
+}
+
+window.loadReportHist=async function(){
+  const mk=document.getElementById('rh-mk').value;
+  const shEl=document.getElementById('rh-shop');
+  const shop=shEl?shEl.value:CU.shop;
+  const body=document.getElementById('rh-body');
+  body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
+  let q='/shop_reports?select=*&date=gte.'+mk+'-01&date=lte.'+mk+'-31&order=date.desc';
+  if(shop)q+='&shop=eq.'+encodeURIComponent(shop);
+  else if(rptShops().length===1)q+='&shop=eq.'+encodeURIComponent(CU.shop);
+  let rows=[];
+  try{ rows=await schFetch(q)||[]; }catch(e){}
+  if(!rows.length){
+    body.innerHTML='<div style="color:var(--muted)">За этот месяц отчётов нет</div>';return;
+  }
+  // Пропущенные дни видно сразу: отчёт, которого нет, — это тоже факт.
+  const days=daysInMk(mk), passed=Math.min(days,
+    mk===today().slice(0,7)?+today().slice(-2):days);
+  const shopsShown=shop?[shop]:rptShops();
+  const expect=shopsShown.length*passed;
+
+  let h='<div class="g4" style="margin-bottom:1rem">'
+    +'<div class="metric"><div class="ml">Отчётов</div><div class="mv">'+rows.length+'</div></div>'
+    +'<div class="metric"><div class="ml">Ожидалось</div><div class="mv">'+expect+'</div></div>'
+    +'<div class="metric"><div class="ml">Посетителей</div><div class="mv">'
+      +fmtN(rows.reduce((s,r)=>s+(+r.visitors||0),0))+'</div></div>'
+    +'<div class="metric"><div class="ml">Выручка в отчётах</div><div class="mv">'
+      +fmt(rows.reduce((s,r)=>s+(+r.revenue||0),0))+'</div></div></div>';
+  h+='<div class="tw-wrap"><table><tr><th>Дата</th><th>Магазин</th><th>Заполнил</th>'
+    +'<th>Выручка</th><th>Чеков</th><th>Посет.</th><th>Чек-лист</th><th>Битрикс</th><th></th></tr>';
+  rows.forEach(r=>{
+    const cl=r.checklist||{};
+    const done=Object.values(cl).filter(x=>x&&x.checked).length;
+    const tot=RPT_SECTIONS.reduce((a,s)=>a+s.items.length,0);
+    const col=done>=tot*0.9?'var(--green)':done>=tot*0.6?'var(--amber)':'var(--red)';
+    h+='<tr><td>'+dayLabel(normDate(r.date))+'</td><td>'+esc(r.shop)+'</td>'
+      +'<td>'+esc(r.author_name)+'<div style="font-size:11px;color:var(--muted)">'
+        +(ROLE_LABELS[r.author_role]||r.author_role)+'</div></td>'
+      +'<td>'+fmt(+r.revenue||0)+'</td><td>'+(+r.checks||0)+'</td><td>'+(+r.visitors||0)+'</td>'
+      +'<td style="color:'+col+';font-weight:600">'+done+' из '+tot+'</td>'
+      +'<td>'+(r.bitrix_sent_at?'<span class="tag ts">ушёл</span>'
+        :r.bitrix_error?'<span class="tag td" title="'+escAttr2(r.bitrix_error)+'">ошибка</span>'
+        :r.send_requested_at?'<span class="tag tw">ждёт обмена</span>'
+        :'<span class="tag ti">не отправлен</span>')+'</td>'
+      +'<td><button class="btn bsm" onclick="rptView(\''+normDate(r.date)+'\',\''+esc(r.shop)+'\')">'
+      +'посмотреть</button></td></tr>';
+  });
+  h+='</table></div>';
+  body.innerHTML=h;
+}
+
+// Карточка одного отчёта — то, что в таблице было листом «Просмотр отчёта»
+window.rptView=async function(date,shop){
+  let r=null;
+  try{
+    const rows=await schFetch('/shop_reports?select=*&date=eq.'+date
+      +'&shop=eq.'+encodeURIComponent(shop));
+    r=rows&&rows[0];
+  }catch(e){}
+  if(!r){alert('Отчёт не найден');return}
+  const checks=+r.checks||0, units=+r.units||0, vis=+r.visitors||0, rev=+r.revenue||0;
+  const cl=r.checklist||{};
+  const rets=Array.isArray(r.returns)?r.returns:[];
+  const tsk=Array.isArray(r.tasks)?r.tasks:[];
+  let h='<div class="ovc" style="max-width:640px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
+    +'<b>🏪 '+esc(shop)+' · '+dayFull(date)+'</b>'
+    +'<button class="btn bsm" onclick="this.closest(\'.ov\').remove()">✕</button></div>'
+    +'<div style="font-size:12.5px;color:var(--muted);margin-bottom:.75rem">Заполнил '
+      +esc(r.author_name)+' · '+(ROLE_LABELS[r.author_role]||r.author_role)+'</div>'
+    +'<div class="g3" style="margin-bottom:1rem">'
+    +'<div class="metric"><div class="ml">Выручка</div><div class="mv">'+fmt(rev)+'</div></div>'
+    +'<div class="metric"><div class="ml">Чеков</div><div class="mv">'+checks+'</div></div>'
+    +'<div class="metric"><div class="ml">Посетителей</div><div class="mv">'+vis+'</div></div></div>'
+    +'<div class="zpr"><span>Средний чек</span><b>'+(checks?fmt(Math.round(rev/checks)):'—')+'</b></div>'
+    +'<div class="zpr"><span>Конверсия</span><b>'+(vis?((checks/vis)*100).toFixed(1)+'%':'—')+'</b></div>'
+    +'<div class="zpr"><span>Единиц товара / UPT</span><b>'+units+' · '
+      +(checks&&units?(units/checks).toFixed(1):'—')+'</b></div>'
+    +'<div class="zpr"><span>Сотрудников на смене</span><b>'+(+r.staff_count||0)
+      +(r.staff_comment?' — '+esc(r.staff_comment):'')+'</b></div>';
+  if(tsk.length){
+    h+='<div class="ct" style="margin-top:1rem">✅ Задачи ('
+      +tsk.filter(t=>t.done).length+'/'+tsk.length+')</div>';
+    tsk.forEach(t=>h+='<div style="font-size:13px;padding:3px 0">'+(t.done?'✓':'✗')+' '
+      +esc(t.text||'—')+(t.result?' <span style="color:var(--muted)">→ '+esc(t.result)+'</span>':'')+'</div>');
+  }
+  h+='<div class="ct" style="margin-top:1rem">↩️ Возвраты</div>';
+  h+=rets.length?rets.map((x,i)=>'<div style="font-size:13px;padding:3px 0">'+(i+1)+'. '
+      +(x.qty||1)+' ед. / '+fmt(parseFloat(x.sum)||0)+(x.reason?' — '+esc(x.reason):'')
+      +(x.exchange?' · обмен: '+esc(x.exchange):'')+'</div>').join('')
+    :'<div style="font-size:13px;color:var(--muted)">Возвратов нет</div>';
+  h+='<div class="ct" style="margin-top:1rem">📋 Чек-лист</div>';
+  RPT_SECTIONS.forEach(sec=>{
+    h+='<div style="margin-top:.6rem;font-size:12px;font-weight:700;color:'+sec.color+'">'
+      +sec.icon+' '+esc(sec.title)+'</div>';
+    sec.items.forEach(it=>{
+      const v=cl[it.id]||{};
+      h+='<div style="font-size:12.5px;padding:2px 0">'+(v.checked?'✅':'❌')+' '+esc(it.text)
+        +(v.note?'<div style="color:var(--muted);padding-left:18px">→ '+esc(v.note)+'</div>':'')+'</div>';
+    });
+  });
+  if(r.incidents) h+='<div class="ct" style="margin-top:1rem">⚠️ Инциденты</div>'
+    +'<div style="font-size:13px">'+esc(r.incidents)+'</div>';
+  h+='<div style="margin-top:1rem;display:flex;gap:8px;flex-wrap:wrap">'
+    +(CU.role==='admin'||CU.role==='manager'
+      ?'<button class="btn bsm" onclick="rptQueueBitrix(\''+date+'\',\''+esc(shop)+'\',this)">'
+       +'📤 Поставить в очередь на отправку</button>':'')
+    +'</div><div id="rv-msg" style="margin-top:8px;font-size:13px"></div></div>';
+  const ov=document.createElement('div');ov.className='ov';ov.innerHTML=h;
+  document.body.appendChild(ov);
+}
+
+// Ручная отправка тоже идёт через очередь: смысл очереди в том, чтобы
+// письмо ушло по обновлённым цифрам, а не по тем, что были в момент нажатия.
+window.rptQueueBitrix=async function(date,shop,btn){
+  const msg=document.getElementById('rv-msg');
+  if(btn){btn.disabled=true;btn.textContent='⏳…'}
+  try{
+    await schFetch('/shop_reports?date=eq.'+date+'&shop=eq.'+encodeURIComponent(shop),
+      {method:'PATCH',body:JSON.stringify({send_requested_at:new Date().toISOString(),
+        send_requested_by:CU.name,bitrix_sent_at:null,bitrix_error:null})});
+    msg.innerHTML='<div class="alert" style="background:var(--al);color:var(--amber)">'
+      +'⏳ Отчёт в очереди. Уйдёт после ближайшего обмена с 1С.</div>';
+  }catch(e){
+    msg.innerHTML='<div class="alert ae">'+esc(e.message)+'</div>';
+  }
+  if(btn){btn.disabled=false;btn.textContent='📤 Поставить в очередь на отправку'}
+}
+
+
+// ══════════════════════════════════════════════════════════
+//  ДАШБОРД
+//  То, что считалось формулами в Google-таблице. Выручка, чеки
+//  и единицы берутся из 1С, посетители и возвраты — из отчётов,
+//  планы — из программы. Наполнять его руками больше нечем.
+// ══════════════════════════════════════════════════════════
+let _dash={view:'month',mk:null,shop:null,sales:[],reps:[],plans:[]};
+
+window.pgDash2=async function(){
+  nav('pgDash2');setTitle('Дашборд');setBadge('');
+  const shops=rptShops();
+  _dash.mk=_dash.mk||today().slice(0,7);
+  _dash.shop=_dash.shop||shops[0];
+  setContent('<div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
+    +'<div class="fg" style="margin:0"><label class="fl">Месяц</label>'
+    +'<select id="d2-mk" class="fc" style="width:auto" onchange="_dash.mk=this.value;dashRender()">'
+    +monthsOpts(13)+'</select></div>'
+    +'<div class="fg" style="margin:0"><label class="fl">Разрез</label>'
+    +'<select id="d2-view" class="fc" style="width:auto" onchange="_dash.view=this.value;dashRender()">'
+    +'<option value="month">Магазины за месяц</option>'
+    +'<option value="year">Один магазин по месяцам</option></select></div>'
+    +'<div class="fg" id="d2-shopwrap" style="margin:0;display:none"><label class="fl">Магазин</label>'
+    +'<select id="d2-shop" class="fc" style="width:auto" onchange="_dash.shop=this.value;dashRender()">'
+    +shops.map(x=>'<option>'+esc(x)+'</option>').join('')+'</select></div>'
+    +'</div></div><div id="d2-body"><div class="spin" style="margin:2rem auto;display:block"></div></div>');
+  document.getElementById('d2-mk').value=_dash.mk;
+  dashRender();
+}
+
+// Метрики одного набора дней. Считаются одинаково везде — иначе
+// «средний чек» на двух вкладках разъедется.
+function dashAgg(sales,reps,plan){
+  let rev=0,chk=0,unt=0,vis=0,retQ=0,retS=0;
+  // Возвраты берём из 1С, а не из отчёта: в отчёте их вбивают руками,
+  // и две цифры об одном и том же неизбежно разъедутся.
+  sales.forEach(s=>{
+    rev+=+s.fact||0; chk+=+s.checks||0; unt+=+s.units||0;
+    retS+=+s.returns_amount||0; retQ+=+s.returns_receipts||0;
+  });
+  reps.forEach(r=>{ vis+=+r.visitors||0; });
+  return {rev,chk,unt,vis,retQ,retS,plan,
+    pct:plan>0?rev/plan*100:0,
+    avg:chk>0?rev/chk:0,
+    conv:vis>0?chk/vis*100:0,
+    upt:chk>0?unt/chk:0,
+    days:sales.length, reports:reps.length};
+}
+function pctCell(v){
+  const c=v>=100?'var(--green)':v>=70?'var(--amber)':'var(--red)';
+  const bg=v>=100?'var(--gl)':v>=70?'var(--al)':'var(--rl)';
+  return '<td style="text-align:center;font-weight:700;color:'+c+';background:'+bg+'">'
+    +(v?v.toFixed(1):'0.0')+'%</td>';
+}
+
+window.dashRender=async function(){
+  const body=document.getElementById('d2-body');
+  const wrap=document.getElementById('d2-shopwrap');
+  if(wrap)wrap.style.display=_dash.view==='year'?'':'none';
+  body.innerHTML='<div class="spin" style="margin:2rem auto;display:block"></div>';
+
+  const shops=rptShops();
+  const yearMode=_dash.view==='year';
+  const from=yearMode?schAddDays(_dash.mk+'-01',-365).slice(0,7)+'-01':_dash.mk+'-01';
+  const to=_dash.mk+'-31';
+  let sales=[],reps=[],plans=[];
+  try{ sales=await schFetch('/shop_sales?select=date,shop,fact,checks,units,'
+    +'returns_amount,returns_receipts&date=gte.'+from+'&date=lte.'+to)||[]; }catch(e){}
+  try{ reps=await schFetch('/shop_reports?select=date,shop,visitors&date=gte.'+from
+    +'&date=lte.'+to)||[]; }catch(e){}
+  try{ plans=await api('getPlans',{})||[]; }catch(e){}
+  const planOf=(shop,mk)=>{
+    const p=plans.find(x=>x.uid==='shop_'+shop&&x.mk===mk);
+    return p?+p.amount||0:0;
+  };
+
+  const ROWS=[
+    ['💰 Выручка',      a=>fmt(a.rev)],
+    ['🎯 % плана',      null],
+    ['🧾 Ср. чек',      a=>fmt(Math.round(a.avg))],
+    ['👥 Конверсия',    a=>a.conv?a.conv.toFixed(1)+'%':'—'],
+    ['📦 Ед. товара',   a=>fmtN(a.unt)],
+    ['📊 UPT',          a=>a.upt?a.upt.toFixed(1):'—'],
+    ['🧾 Чеков',        a=>fmtN(a.chk)],
+    ['📋 Отчётов',      a=>a.reports],
+    ['↩️ Возвраты, чеков', a=>a.retQ||'—'],
+    ['↩️ Возвраты, ₸',  a=>a.retS?fmt(a.retS):'—'],
+  ];
+
+  let h='';
+  if(!yearMode){
+    // ── магазины за месяц ──
+    const cols=shops.map(sh=>({sh,a:dashAgg(
+      sales.filter(x=>x.shop===sh&&normDate(x.date).startsWith(_dash.mk)),
+      reps.filter(x=>x.shop===sh&&normDate(x.date).startsWith(_dash.mk)),
+      planOf(sh,_dash.mk))}));
+    const totPlan=shops.reduce((s,sh)=>s+planOf(sh,_dash.mk),0);
+    const tot=dashAgg(sales.filter(x=>normDate(x.date).startsWith(_dash.mk)),
+      reps.filter(x=>normDate(x.date).startsWith(_dash.mk)),totPlan);
+
+    h+='<div class="card"><div class="ct">📊 '+
+      new Date(_dash.mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'})+'</div>'
+      +'<div class="tw-wrap"><table><tr><th>Показатель</th>'
+      +cols.map(c=>'<th style="text-align:center">'+esc(c.sh)+'</th>').join('')
+      +'<th style="text-align:center;background:var(--gl)">по сети</th></tr>';
+    ROWS.forEach(([label,fn])=>{
+      h+='<tr><td><b>'+label+'</b></td>';
+      cols.forEach(c=>{ h+=fn?'<td style="text-align:center">'+fn(c.a)+'</td>':pctCell(c.a.pct); });
+      h+=fn?'<td style="text-align:center;background:var(--gl);font-weight:700">'+fn(tot)+'</td>'
+           :pctCell(tot.pct);
+      h+='</tr>';
+    });
+    h+='<tr><td><b>📋 План</b></td>'
+      +cols.map(c=>'<td style="text-align:center;color:var(--muted)">'
+        +(c.a.plan?fmt(c.a.plan):'—')+'</td>').join('')
+      +'<td style="text-align:center;background:var(--gl)">'+(totPlan?fmt(totPlan):'—')+'</td></tr>';
+    h+='</table></div></div>';
+  }else{
+    // ── один магазин, 12 месяцев ──
+    const sh=_dash.shop;
+    const mks=[];
+    const [y,m]=_dash.mk.split('-').map(Number);
+    for(let i=0;i<12;i++){
+      const d=new Date(y,m-1-i,1);
+      mks.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));
+    }
+    h+='<div class="card"><div class="ct">📅 '+esc(sh)+' — 12 месяцев</div>'
+      +'<div class="tw-wrap"><table><tr><th>Месяц</th><th>Выручка</th><th>План</th><th>% плана</th>'
+      +'<th>Ср. чек</th><th>Чеков</th><th>Посет.</th><th>Конв.</th><th>Ед.</th><th>UPT</th>'
+      +'<th>Возвр. чеков</th><th>Возвр. ₸</th><th>Отчётов</th></tr>';
+    mks.forEach(mk=>{
+      const a=dashAgg(sales.filter(x=>x.shop===sh&&normDate(x.date).startsWith(mk)),
+        reps.filter(x=>x.shop===sh&&normDate(x.date).startsWith(mk)),planOf(sh,mk));
+      h+='<tr><td><b>'+new Date(mk+'-01').toLocaleDateString('ru-RU',{month:'long',year:'numeric'})+'</b></td>'
+        +'<td>'+fmt(a.rev)+'</td><td style="color:var(--muted)">'+(a.plan?fmt(a.plan):'—')+'</td>'
+        +pctCell(a.pct)
+        +'<td>'+fmt(Math.round(a.avg))+'</td><td>'+fmtN(a.chk)+'</td><td>'+fmtN(a.vis)+'</td>'
+        +'<td>'+(a.conv?a.conv.toFixed(1)+'%':'—')+'</td>'
+        +'<td>'+fmtN(a.unt)+'</td><td>'+(a.upt?a.upt.toFixed(1):'—')+'</td>'
+        +'<td>'+(a.retQ||'—')+'</td><td>'+(a.retS?fmt(a.retS):'—')+'</td>'
+        +'<td>'+a.reports+'</td></tr>';
+    });
+    h+='</table></div></div>';
+  }
+  h+='<div style="font-size:12px;color:var(--muted)">Выручка, чеки, единицы и возвраты — из 1С. '
+    +'Посетители — из отчётов магазинов, счётчик на входе 1С не знает. Планы — из «Планов». '
+    +'Пустая конверсия значит, что за эти дни отчёты не заполняли.</div>';
+  body.innerHTML=h;
+}
+
 // ══ СОТРУДНИКИ ══
 window.pgSellers=async function(){
   nav('pgSellers');setTitle('Сотрудники');setBadge('');
@@ -1642,6 +3339,7 @@ window.pgSellers=async function(){
         <div class="fg"><label class="fl">Роль</label>
           <select id="nr" class="fc">
             <option value="seller">Продавец</option>
+            <option value="runner">Раннер</option>
             ${CU.role==='admin'?'<option value="manager">Управляющий</option><option value="accountant">Бухгалтер</option><option value="admin">Гл. Администратор</option>':''}
           </select>
         </div>
@@ -1685,7 +3383,7 @@ window.renderDeletedUsers=async function(){
 window.restoreUserClick=async function(id){
   L(true);
   await apiPost('restoreUser',{id});
-  USERS=await api('getUsers');
+  USERS=await api('getUsers');refreshShops();
   const sel=document.getElementById('lname');
   if(sel){sel.innerHTML='<option value="">— выберите —</option>';
     [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${esc(u.name)}</option>`});}
@@ -1716,7 +3414,8 @@ function renderSellers(){
     <tr><th>Имя</th><th>Магазин</th><th>Роль</th><th></th></tr>
     ${users.map(u=>{
       // manager can only edit/delete sellers from their shop
-      const canEdit = CU.role==='admin' || (CU.role==='manager' && u.role==='seller' && u.shop===CU.shop);
+      const canEdit = CU.role==='admin'
+        || (CU.role==='manager' && (u.role==='seller'||isClockRole(u.role)) && u.shop===CU.shop);
       return `<tr>
         <td>${esc(u.name)}</td><td>${esc(u.shop)||'—'}</td><td>${rm[u.role]||esc(u.role)}</td>
         <td style="white-space:nowrap">
@@ -1745,6 +3444,11 @@ window.openEditUser=function(id){
       <div class="fg"><label class="fl">Роль</label>
         <select id="eu-role" class="fc">
           <option value="seller" ${u.role==='seller'?'selected':''}>Продавец</option>
+          <option value="runner" ${u.role==='runner'?'selected':''}>Раннер</option>
+          ${CU.role==='admin'?`<option value="whhead" ${u.role==='whhead'?'selected':''}>Зав. складом</option>
+          <option value="store" ${u.role==='store'?'selected':''}>Кладовщик</option>
+          <option value="immgr" ${u.role==='immgr'?'selected':''}>Менеджер ИМ</option>
+          <option value="streamer" ${u.role==='streamer'?'selected':''}>Стример</option>`:''}
           ${CU.role==='admin'?`<option value="manager" ${u.role==='manager'?'selected':''}>Управляющий</option><option value="accountant" ${u.role==='accountant'?'selected':''}>Бухгалтер</option><option value="admin" ${u.role==='admin'?'selected':''}>Гл. Администратор</option>`:''}
         </select>
       </div>
@@ -1770,7 +3474,7 @@ window.saveEditUser=async function(id){
   L(true);
   await apiPost('updateUser',{id,name,shop,role,pass});
   logAction('updateUser',name,null,{shop,role,passChanged:!!pass});
-  USERS=await api('getUsers');
+  USERS=await api('getUsers');refreshShops();
   // refresh login select
   const sel=document.getElementById('lname');
   if(sel){sel.innerHTML='<option value="">— выберите —</option>';
@@ -1788,7 +3492,7 @@ window.addSeller=async function(){
   if(!name||!pass){alert('Заполните имя и пароль');return}
   L(true);
   await apiPost('addUser',{name,shop,role,pass});
-  USERS=await api('getUsers');
+  USERS=await api('getUsers');refreshShops();
   const sel=document.getElementById('lname');
   if(sel){sel.innerHTML='<option value="">— выберите —</option>';
     [...USERS].sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>{sel.innerHTML+=`<option value="${u.id}">${esc(u.name)}</option>`});}
@@ -1800,7 +3504,7 @@ window.addSeller=async function(){
 
 window.removeSeller=async function(id){
   if(!confirm('Удалить сотрудника?'))return;
-  L(true);await apiPost('deleteUser',{id});USERS=await api('getUsers');L(false);
+  L(true);await apiPost('deleteUser',{id});USERS=await api('getUsers');refreshShops();L(false);
   renderSellers();
 }
 
@@ -1829,7 +3533,7 @@ window.pgPlans=async function(){
     <div class="ct">Установить план — Магазин</div>
     <div class="fr">
       <div class="fg"><label class="fl">Магазин</label>
-        <select id="shop-psel" class="fc">${SHOPS.map(s=>`<option>${s}</option>`).join('')}</select>
+        <select id="shop-psel" class="fc">${SHOPS.filter(isTradeShop).map(s=>`<option>${s}</option>`).join('')}</select>
       </div>
       <div class="fg"><label class="fl">Месяц</label>
         <select id="shop-pmk" class="fc">${monthsOpts(3,4)}</select>
@@ -1853,7 +3557,7 @@ function buildShopPlansTable(){
   const months=[];
   for(let i=-1;i<5;i++){const d=new Date(y,m+i,1);months.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'));}
   let html=`<table><tr><th>Магазин</th>${months.map(mk=>`<th>${mk}</th>`).join('')}</tr>`;
-  SHOPS.forEach(shop=>{
+  SHOPS.filter(isTradeShop).forEach(shop=>{
     const uid='shop_'+shop;
     html+=`<tr><td>${shop}</td>`;
     months.forEach(mk=>{const p=getPlan(uid,mk);html+=`<td style="font-size:12px">${p?fmtN(p):'—'}</td>`;});
@@ -1948,6 +3652,59 @@ window.pgParams=function(){
   mgrParamsHtml+='<div class="fr"><div class="fg"><label class="fl">Норма UPT</label><input type="number" id="mgr-upt" class="fc" step="0.1" value="'+(MGR_PARAMS.uptNorm||2.5)+'"></div></div>';
   mgrParamsHtml+='<button class="btn bp" onclick="saveMgrParamsFn()">Сохранить параметры управляющих</button></div>';
   document.querySelector('.cnt').insertAdjacentHTML('beforeend',mgrParamsHtml);
+
+  // Сетка раннера намеренно короткая: он не продаёт, поэтому ни планов,
+  // ни процентов, ни KPI у него нет — только цена смены и её длина.
+  const rc=runnerCfg();
+  var runnerHtml='<div class="card" style="max-width:560px;margin-top:1rem">'
+    +'<div class="ct">Параметры ЗП — Раннеры</div>'
+    +'<div class="alert ai" style="display:block;margin-bottom:1rem">'
+    +'Раннер получает за отработанное время. Смена — это '+rc.hours+' ч по цене '
+    +fmt(rc.rate)+'. Работал меньше — платим по времени, больше — всё равно одна смена.</div>'
+    +'<div id="pmsg-run"></div>'
+    +'<div class="fr">'
+    +'<div class="fg"><label class="fl">Оплата за смену (₸)</label>'
+    +'<input type="number" id="run-rate" class="fc" value="'+rc.rate+'"></div>'
+    +'<div class="fg"><label class="fl">Часов в смене</label>'
+    +'<input type="number" id="run-hours" class="fc" step="0.5" value="'+rc.hours+'"></div></div>'
+    +'<div class="fr">'
+    +'<div class="fg"><label class="fl">Шаг округления (мин)</label>'
+    +'<input type="number" id="run-step" class="fc" step="5" value="'+rc.step+'"></div>'
+    +'<div class="fg"><label class="fl">Час стоит</label>'
+    +'<input type="text" class="fc" id="run-hour" value="'+fmt(Math.round(rc.rate/rc.hours))+'" disabled></div></div>'
+    +'<button class="btn bp" onclick="saveRunnerParams()">Сохранить параметры раннеров</button></div>';
+  document.querySelector('.cnt').insertAdjacentHTML('beforeend',runnerHtml);
+
+  // Склад, интернет-магазин и стример — одна панель на всех: у них
+  // либо цена смены, либо оклад, и разводить это по четырём экранам
+  // значит четыре раза искать, где же меняется ставка.
+  const pc=k=>PARAMS[k]!==undefined?PARAMS[k]:POSITIONS[k===
+    'whRate'?'whhead':k==='storeRate'?'store':k==='imOklad'?'immgr':'streamer'];
+  var posHtml='<div class="card" style="max-width:560px;margin-top:1rem">'
+    +'<div class="ct">Параметры ЗП — склад, интернет-магазин, стример</div>'
+    +'<div class="alert ai" style="display:block;margin-bottom:1rem">'
+    +'Склад получает за смену, как раннер. У менеджера ИМ и стримера месячный '
+    +'оклад: он делится на норму смен и умножается на отработанные. В коротком '
+    +'месяце меняйте норму — пересчитается всё разом.</div>'
+    +'<div id="pmsg-pos"></div>'
+    +'<div class="fr">'
+    +'<div class="fg"><label class="fl">Зав. складом — за смену (₸)</label>'
+    +'<input type="number" id="pos-wh" class="fc" value="'+(parseFloat(PARAMS.whRate)||15000)+'"></div>'
+    +'<div class="fg"><label class="fl">Кладовщик — за смену (₸)</label>'
+    +'<input type="number" id="pos-store" class="fc" value="'+(parseFloat(PARAMS.storeRate)||12500)+'"></div>'
+    +'</div><div class="fr">'
+    +'<div class="fg"><label class="fl">Менеджер ИМ — оклад за месяц (₸)</label>'
+    +'<input type="number" id="pos-im" class="fc" value="'+(parseFloat(PARAMS.imOklad)||500000)+'"></div>'
+    +'<div class="fg"><label class="fl">Стример — оклад за месяц (₸)</label>'
+    +'<input type="number" id="pos-stream" class="fc" value="'+(parseFloat(PARAMS.streamOklad)||300000)+'"></div>'
+    +'</div><div class="fr">'
+    +'<div class="fg"><label class="fl">Стример — доля от личных продаж</label>'
+    +'<input type="number" step="0.001" id="pos-pct" class="fc" value="'+(parseFloat(PARAMS.streamPct)||0.05)+'"></div>'
+    +'<div class="fg"><label class="fl">Норма смен в месяце (для окладов)</label>'
+    +'<input type="number" id="pos-norm" class="fc" value="'+okladNorm()+'"></div>'
+    +'</div>'
+    +'<button class="btn bp" onclick="savePosParams()">Сохранить параметры должностей</button></div>';
+  document.querySelector('.cnt').insertAdjacentHTML('beforeend',posHtml);
 }
 
 window.saveParams=async function(){
@@ -1963,21 +3720,54 @@ window.saveParams=async function(){
     avgNorm:parseFloat(document.getElementById('pp-avg').value)||15000,
     uptNorm:parseFloat(document.getElementById('pp-upt').value)||2.5,
   };
-  L(true);await apiPost('saveParams',np);PARAMS=np;L(false);
+  L(true);await apiPost('saveParams',np);PARAMS={...PARAMS,...np};L(false);
   const m=document.getElementById('pmsg2');m.className='alert as';m.textContent='✓ Параметры сохранены';
   setTimeout(()=>m.textContent='',3000);
 }
 
-window.pgOpenReport=function(){
-  // Build URL with store and manager pre-selected
-  const reportStore = SHOP_TO_REPORT[CU.shop] || CU.shop;
-  const params = new URLSearchParams({
-    store:   reportStore,
-    manager: CU.name,
-    auto:    '1'
-  });
-  window.open(REPORTS_URL + '?' + params.toString(), '_blank');
+
+window.savePosParams=async function(){
+  const m=document.getElementById('pmsg-pos');
+  const np={
+    whRate:     parseFloat(document.getElementById('pos-wh').value)||15000,
+    storeRate:  parseFloat(document.getElementById('pos-store').value)||12500,
+    imOklad:    parseFloat(document.getElementById('pos-im').value)||500000,
+    streamOklad:parseFloat(document.getElementById('pos-stream').value)||300000,
+    streamPct:  parseFloat(document.getElementById('pos-pct').value)||0.05,
+    okladNorm:  parseFloat(document.getElementById('pos-norm').value)||22
+  };
+  if(np.okladNorm<=0){ m.className='alert ae';m.textContent='Норма смен должна быть больше нуля';return; }
+  L(true);
+  try{ await apiPost('saveParams',np); }
+  catch(e){ L(false);m.className='alert ae';m.textContent='Не сохранилось: '+e.message;return; }
+  PARAMS={...PARAMS,...np};
+  L(false);
+  logAction('savePosParams',null,null,np);
+  m.className='alert as';m.textContent='✓ Параметры должностей сохранены';
+  setTimeout(()=>m.textContent='',3000);
 }
+
+window.saveRunnerParams=async function(){
+  const m=document.getElementById('pmsg-run');
+  const np={
+    runnerRate:  parseFloat(document.getElementById('run-rate').value)||RUNNER_DEFAULTS.rate,
+    runnerHours: parseFloat(document.getElementById('run-hours').value)||RUNNER_DEFAULTS.hours,
+    runnerStepMin:parseFloat(document.getElementById('run-step').value)||RUNNER_DEFAULTS.step
+  };
+  if(np.runnerHours<=0||np.runnerStepMin<=0){
+    m.className='alert ae';m.textContent='Часы и шаг должны быть больше нуля';return;
+  }
+  L(true);
+  try{ await apiPost('saveParams',np); }
+  catch(e){ L(false);m.className='alert ae';m.textContent='Не сохранилось: '+e.message;return; }
+  PARAMS={...PARAMS,...np};
+  L(false);
+  document.getElementById('run-hour').value=fmt(Math.round(np.runnerRate/np.runnerHours));
+  logAction('saveRunnerParams',null,null,np);
+  m.className='alert as';m.textContent='✓ Параметры раннеров сохранены';
+  setTimeout(()=>m.textContent='',3000);
+}
+
 
 
 // ════════════════════════════════════════
@@ -2177,8 +3967,9 @@ window.exportPayrollExcel=function(){
   if(all.length===0){alert('Нет данных для экспорта. Сначала открой начисление ЗП.');return;}
   if(typeof XLSX==='undefined'){alert('Библиотека Excel не загрузилась. Обнови страницу.');return;}
   const mk=document.getElementById('payMk')?document.getElementById('payMk').value:curMk();
-  const sellers=all.filter(r=>r.kind!=='manager');
+  const sellers=all.filter(r=>r.kind==='seller');
   const mgrs=all.filter(r=>r.kind==='manager');
+  const runs=all.filter(r=>r.kind==='clock');
   const wb=XLSX.utils.book_new();
   const R0=5; // первая строка данных на листах расчёта
 
@@ -2190,7 +3981,7 @@ window.exportPayrollExcel=function(){
     'kBase','vBase','k80','v80','k100','v100','k140','v140','commTotal',
     'checks','units','avg','avgNorm','kpiRate','vKpi1','upt','uptNorm','vKpi2'];
   const KEYS_SHOP=['shopMet','bMagRate','vMag'];
-  const KEYS_TAIL=['bonusTotal','accrued','extraBonus','bonusNote','advance','pension','fines','payout'];
+  const KEYS_TAIL=['bonusTotal','accrued','extraBonus','bonusNote','advance','pension','ipn','vosms','fines','payout'];
   const FORMULA_KEYS=['pct','oklad','vBase','v80','v100','v140','commTotal',
     'avg','vKpi1','upt','vKpi2','vMag','bonusTotal','accrued','payout'];
   const HEAD={
@@ -2208,7 +3999,7 @@ window.exportPayrollExcel=function(){
     shopMet:'План магазина',bMagRate:'Ставка премии за магазин',vMag:'ПРЕМИЯ за план магазина',
     bonusTotal:'ИТОГО ПРЕМИИ',accrued:'НАЧИСЛЕНО',
     extraBonus:'Разовая премия',bonusNote:'За что премия',
-    advance:'Аванс',pension:'Пенсия',fines:'Штрафы',payout:'К ВЫПЛАТЕ'};
+    advance:'Аванс',pension:'Пенсия',ipn:'ИПН',vosms:'ВОСМС',fines:'Штрафы',payout:'К ВЫПЛАТЕ'};
 
   const detail=(rows,sheet,isMgr)=>{
     if(!rows.length)return null;
@@ -2245,15 +4036,15 @@ window.exportPayrollExcel=function(){
         xlF(ws,a('bonusTotal'),a('vKpi1')+'+'+a('vKpi2')+'+'+a('vMag'));
       }
       xlF(ws,a('accrued'),  a('oklad')+'+'+a('commTotal')+'+'+a('bonusTotal'));
-      xlF(ws,a('payout'),   a('accrued')+'+'+a('extraBonus')+'-'+a('advance')+'-'+a('pension')+'-'+a('fines'));
-      ['realSales','sales','plan','rate','avgNorm','kpiRate','extraBonus','advance','pension','fines']
+      xlF(ws,a('payout'),   a('accrued')+'+'+a('extraBonus')+'-'+a('advance')+'-'+a('pension')+'-'+a('ipn')+'-'+a('vosms')+'-'+a('fines'));
+      ['realSales','sales','plan','rate','avgNorm','kpiRate','extraBonus','advance','pension','ipn','vosms','fines']
         .concat(isMgr?[]:['bMagRate']).forEach(k=>xlZ(ws,a(k),XL_MONEY));
       ['kBase','k80','k100','k140'].forEach(k=>xlZ(ws,a(k),XL_RATE));
     });
     const t=rows.length+R0;
     ws[C.name+t]={t:'s',v:'ИТОГО'};
     ['realSales','sales','plan','oklad','vBase','v80','v100','v140','commTotal',
-      'vKpi1','vKpi2','bonusTotal','accrued','extraBonus','advance','pension','fines','payout']
+      'vKpi1','vKpi2','bonusTotal','accrued','extraBonus','advance','pension','ipn','vosms','fines','payout']
       .concat(isMgr?[]:['vMag'])
       .forEach(k=>xlF(ws,C[k]+t,'SUM('+C[k]+R0+':'+C[k]+(t-1)+')'));
     xlF(ws,C.shifts+t,'SUM('+C.shifts+R0+':'+C.shifts+(t-1)+')','0.0');
@@ -2271,8 +4062,8 @@ window.exportPayrollExcel=function(){
   const ordered=sellers.concat(mgrs);
   const sv=[['СВОД НАЧИСЛЕНИЙ · '+mk],
     ['Каждое число — ссылка на лист расчёта. Правится там, здесь пересчитывается само.'],[],
-    ['Сотрудник','Роль','Магазин','Смен','Оклад','% от продаж','ПРЕМИИ','НАЧИСЛЕНО','Разовая премия','Аванс','Пенсия','Штрафы','К ВЫПЛАТЕ']];
-  ordered.forEach(r=>sv.push([r.name,r.role,r.shop,null,null,null,null,null,null,null,null,null,null]));
+    ['Сотрудник','Роль','Магазин','Смен','Оклад','% от продаж','ПРЕМИИ','НАЧИСЛЕНО','Разовая премия','Аванс','Пенсия','ИПН','ВОСМС','Штрафы','К ВЫПЛАТЕ']];
+  ordered.forEach(r=>sv.push([r.name,r.role,r.shop,null,null,null,null,null,null,null,null,null,null,null,null]));
   const wsSv=XLSX.utils.aoa_to_sheet(sv);
   ordered.forEach((r,i)=>{
     const n=i+R0,isM=r.kind==='manager';
@@ -2288,16 +4079,18 @@ window.exportPayrollExcel=function(){
     xlF(wsSv,'I'+n,src+C.extraBonus+k);
     xlF(wsSv,'J'+n,src+C.advance+k);
     xlF(wsSv,'K'+n,src+C.pension+k);
-    xlF(wsSv,'L'+n,src+C.fines+k);
-    xlF(wsSv,'M'+n,'H'+n+'+I'+n+'-J'+n+'-K'+n+'-L'+n);
+    xlF(wsSv,'L'+n,src+C.ipn+k);
+    xlF(wsSv,'M'+n,src+C.vosms+k);
+    xlF(wsSv,'N'+n,src+C.fines+k);
+    xlF(wsSv,'O'+n,'H'+n+'+I'+n+'-J'+n+'-K'+n+'-L'+n+'-M'+n+'-N'+n);
   });
   const tr=ordered.length+R0;
   wsSv['A'+tr]={t:'s',v:'ИТОГО'};
-  ['D','E','F','G','H','I','J','K','L','M'].forEach(c=>
+  ['D','E','F','G','H','I','J','K','L','M','N','O'].forEach(c=>
     xlF(wsSv,c+tr,'SUM('+c+R0+':'+c+(tr-1)+')',c==='D'?'0.0':XL_MONEY));
-  wsSv['!ref']='A1:M'+tr;
-  wsSv['!cols']=[{wch:26},{wch:14},{wch:15},{wch:8},{wch:13},{wch:14},{wch:13},{wch:14},{wch:15},{wch:12},{wch:12},{wch:12},{wch:15}];
-  wsSv['!merges']=[{s:{r:0,c:0},e:{r:0,c:12}},{s:{r:1,c:0},e:{r:1,c:12}}];
+  wsSv['!ref']='A1:O'+tr;
+  wsSv['!cols']=[{wch:26},{wch:14},{wch:15},{wch:8},{wch:13},{wch:14},{wch:13},{wch:14},{wch:15},{wch:12},{wch:12},{wch:12},{wch:12},{wch:12},{wch:15}];
+  wsSv['!merges']=[{s:{r:0,c:0},e:{r:0,c:14}},{s:{r:1,c:0},e:{r:1,c:14}}];
   XLSX.utils.book_append_sheet(wb,wsSv,'Свод');
 
   // ══ ПАРАМЕТРЫ ═════════════════════════════════════════════════
@@ -2327,6 +4120,36 @@ window.exportPayrollExcel=function(){
   [5,6,7,8].forEach(n=>{xlZ(wsP,'B'+n,XL_RATE);xlZ(wsP,'C'+n,XL_RATE)});
   wsP['!cols']=[{wch:44},{wch:16},{wch:16}];
   wsP['!merges']=[{s:{r:0,c:0},e:{r:0,c:2}}];
+  // Раннеры отдельным листом: у них нет ни планов, ни процентов,
+  // и мешать их со сложным листом продавцов бессмысленно.
+  if(runs.length){
+    const cfg=runnerCfg('runner');
+    const aoa=[['ПОВРЕМЕННЫЕ ДОЛЖНОСТИ · '+mk],[],
+      ['Часов в смене',cfg.hours,'Шаг округления, мин',cfg.step,'Норма смен для окладов',okladNorm()],[],
+      ['Сотрудник','Должность','Магазин','Смен','Часов','Начислено','Премия','Обоснование',
+       'Аванс','Пенсия','ИПН','ВОСМС','Штрафы','К выплате']];
+    runs.forEach(r=>aoa.push([r.name,r.role||'',r.shop||'',r.shifts,Math.round(r.hours*100)/100,
+      r.accrued,r.bonus||0,r.bonusNote||'',r.advance||0,r.pension||0,r.ipn||0,r.vosms||0,r.fines||0,0]));
+    const wsR=XLSX.utils.aoa_to_sheet(aoa);
+    const R=6; // первая строка данных
+    runs.forEach((r,i)=>{
+      const row=R+i;
+      // Начислено = смены × ставка. Ставка лежит в B3, бухгалтер меняет её —
+      // пересчитывается весь лист.
+      // Начислено не формулой: ставка у каждой должности своя, а у окладных
+      // это вообще оклад по норме. Формула бы врала на смешанном листе.
+      xlF(wsR,'N'+row,'F'+row+'+G'+row+'-I'+row+'-J'+row+'-K'+row+'-L'+row+'-M'+row);
+      xlZ(wsR,'D'+row,'0.####');
+      ['F','G','I','J','K','L','M'].forEach(c=>xlZ(wsR,c+row,XL_MONEY));
+    });
+    const tot=R+runs.length;
+    wsR['A'+tot]={t:'s',v:'ИТОГО'};
+    ['D','F','G','I','J','K','L','M','N'].forEach(c=>
+      xlF(wsR,c+tot,'SUM('+c+R+':'+c+(tot-1)+')',c==='D'?'0.####':XL_MONEY));
+    wsR['!cols']=[{wch:24},{wch:16},{wch:14},{wch:8},{wch:9},{wch:12},{wch:11},{wch:22},
+                  {wch:11},{wch:11},{wch:11},{wch:11},{wch:11},{wch:13}];
+    XLSX.utils.book_append_sheet(wb,wsR,'Повременные');
+  }
   XLSX.utils.book_append_sheet(wb,wsP,'Параметры');
 
   XLSX.writeFile(wb,'FBSM_Начисления_'+mk+'.xlsx');
@@ -2350,7 +4173,16 @@ const SB_REST=API.replace('/functions/v1/api','/rest/v1');
 const SCH_DOW=['вс','пн','вт','ср','чт','пт','сб'];
 let SCH_POINTS=[],SCH_TYPES=[],_sch={},_schMk=null,_schShop=null;
 
+// Чтение идёт напрямую в базу публичным ключом — он на то и публичный.
+// Запись — только через сервер: ключ лежит в исходнике страницы, и пока
+// таблицы были открыты, им можно было поправить чужой график, дописать
+// себе часы или открыть закрытый месяц. Перехватываем в одном месте,
+// чтобы правило было одно, а не двадцать три.
 async function schFetch(path,opts={}){
+  const m=(opts.method||'GET').toUpperCase();
+  if(m!=='GET'){
+    return api('dbWrite',{path,method:m,body:opts.body||null});
+  }
   const r=await fetch(SB_REST+path,{...opts,headers:{
     'Content-Type':'application/json',
     'Authorization':'Bearer '+SUPABASE_ANON_KEY,
@@ -2438,11 +4270,12 @@ const fmtSh=n=>Number.isInteger(n)?String(n):String(Math.round(n*10)/10).replace
 // Магазины, доступные текущему пользователю: продавец и управляющий —
 // только свой, остальные роли — все.
 function schShops(){
-  return(CU.role==='seller'||CU.role==='manager')?[CU.shop]:SHOPS;
+  // Раннер тоже сидит в одном магазине: чужие графики ему видеть незачем.
+  return(CU.role==='seller'||CU.role==='manager'||isClockRole(CU.role)||CU.role==='streamer')?[CU.shop]:SHOPS;
 }
 // В графике участвуют продавцы и управляющие выбранного магазина.
 function schVisibleUsers(shop){
-  return USERS.filter(u=>(u.role==='seller'||u.role==='manager')&&u.shop===shop)
+  return USERS.filter(u=>STAFF_ROLES.indexOf(u.role)>=0&&u.shop===shop)
               .sort((a,b)=>a.name.localeCompare(b.name,'ru'));
 }
 
@@ -2512,6 +4345,7 @@ function schCellHtml(u,dt,hasPlanMonth){
   if(hasFact){
     fbg='var(--green)';
     ttl+=r.actual_source==='manager-auto' ? ' · смена зачтена по графику'
+        : r.actual_source==='runner'      ? ' · раннер отметился'
         : r.actual_source==='sales'       ? ' · смена подтверждена продажами'
         : ' · смена отмечена';
   }
@@ -2525,16 +4359,36 @@ function schCellHtml(u,dt,hasPlanMonth){
     +'<div class="sch-f"'+(fbg==='transparent'?'':' style="background:'+fbg+'"')+'></div></div></td>';
 }
 
+
+// Смены раннеров за месяц: uid → { дата → минуты, всего минут, смен }.
+// Графику и табелю нужны именно часы: у раннера клетка не равна смене,
+// он мог отработать полсмены, и в оплату идёт доля.
+let _schRun={};
+async function schLoadRunners(mk,users){
+  _schRun={};
+  const ids=users.filter(u=>u.role==='runner').map(u=>u.id);
+  if(!ids.length)return;
+  let rows=[];
+  try{
+    rows=await schFetch('/runner_shifts?select=*&uid=in.'+encodeURIComponent(schInList(ids))
+      +'&date=gte.'+mk+'-01&date=lte.'+mk+'-31')||[];
+  }catch(e){ return; }
+  const byUid={};
+  rows.forEach(r=>{(byUid[r.uid]=byUid[r.uid]||[]).push(r)});
+  Object.keys(byUid).forEach(uid=>{_schRun[uid]=runnerTotals(byUid[uid],roleOf(uid))});
+}
+function schRunTotal(uid){ return _schRun[uid]||{days:{},min:0,shifts:0}; }
+
 async function schRender(){
   const body=document.getElementById('sch-body'),box=document.getElementById('sch-alert');
   if(!body)return;
   body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
   const users=schVisibleUsers(_schShop);
   if(!users.length){
-    body.innerHTML='<div class="card">В магазине «'+_schShop+'» нет продавцов и управляющих.</div>';
+    body.innerHTML='<div class="card">В магазине «'+_schShop+'» нет сотрудников.</div>';
     if(box)box.innerHTML='';return;
   }
-  try{_sch=await schLoad(_schMk,users.map(u=>u.id))}
+  try{_sch=await schLoad(_schMk,users.map(u=>u.id)); await schLoadRunners(_schMk,users);}
   catch(e){body.innerHTML='<div class="alert ae">'+e.message+'</div>';return}
 
   const days=[];
@@ -2570,9 +4424,16 @@ async function schRender(){
       }
       row+=schCellHtml(u,dt,hasPlan[u.id]);
     });
+    // У раннера клетка не равна смене: он мог отработать полсмены,
+    // и в оплату идёт доля. Показываем её и часы рядом.
+    const rt=u.role==='runner'?schRunTotal(u.id):null;
+    const factCol=rt
+      ? fmtSh(Math.round(rt.shifts*100)/100)
+        +'<div style="font-size:10px;color:var(--muted)">'+hhmm(rt.min)+'</div>'
+      : String(fc);
     h+='<tr><td class="sch-name"><b>'+esc(u.name)+'</b><div style="font-size:11px;color:var(--muted)">'
       +(rm[u.role]||u.role)+'</div></td>'+row
-      +'<td class="sch-tot">'+pc+'</td><td class="sch-tot">'+fc+'</td></tr>';
+      +'<td class="sch-tot">'+pc+'</td><td class="sch-tot">'+factCol+'</td></tr>';
   });
 
   const pts=schPointsForShop(_schShop),own=schPointOfShop(_schShop),uncov=[];
@@ -2588,14 +4449,16 @@ async function schRender(){
       if(own&&p.code===own.code&&c===0)uncov.push(dt);
       cells+='<td class="sch-day'+(schIsWe(dt)?' sch-we':'')+'" style="text-align:center">'+(c||'')+'</td>';
     });
-    h+='<tr class="sch-sum"><td class="sch-name">Итого · '+p.name+'</td>'+cells
+    h+='<tr class="sch-sum"><td class="sch-name">Итого · '+esc(p.name)+'</td>'+cells
       +'<td class="sch-tot">'+tot+'</td><td class="sch-tot"></td></tr>';
   });
   h+='</tbody></table></div><div class="sch-legend">';
-  pts.forEach(p=>h+='<span><span class="sch-dot" style="background:'+p.color+'"></span>'+p.code+' — '+p.name+'</span>');
+  pts.forEach(p=>h+='<span><span class="sch-dot" style="background:'+esc(p.color)+'"></span>'
+    +esc(p.code)+' — '+esc(p.name)+'</span>');
   h+='<span style="margin-left:auto"><span class="sch-dot" style="background:var(--green)"></span>смена подтверждена продажами</span>'
     +'<span><span class="sch-dot" style="background:var(--red)"></span>план был, факта нет</span>'
     +'<span><span class="sch-dot" style="border:2px dashed var(--blue)"></span>вышел вне графика</span></div>';
+  h+=await schSignatureBar(_schMk,_schShop);
   body.innerHTML=h;
 
   if(box){
@@ -2646,6 +4509,7 @@ window.schOpen=function(uid,dt){
       ✓ Факт: ${r.actual_point}${
         r.actual_source==='sales'?' (проставлено автоматически по продажам)'
         :r.actual_source==='manager-auto'?' (зачтено по графику — управляющий продажи не подтверждает)'
+        :r.actual_source==='runner'?' (раннер отметил приход и уход)'
         :''}</div>`:''}
   </div>`;
   document.body.appendChild(ov);
@@ -2718,7 +4582,14 @@ window.schExportExcel=function(){
     if(t&&!t.needs_point)return t.short;
     return r.planned_point?r.planned_point+(t&&t.code!=='full'?t.short:''):'';
   };
-  const factCell=(u,dt)=>{const r=_sch[u.id+'|'+dt];return r&&r.actual_point?r.actual_point:''};
+  const factCell=(u,dt)=>{
+    // Раннеру в табеле важны часы, а не буква точки: у него смена дробная.
+    if(u.role==='runner'){
+      const m=(schRunTotal(u.id).days||{})[dt];
+      return m?Math.round(m/60*100)/100:'';
+    }
+    const r=_sch[u.id+'|'+dt];return r&&r.actual_point?r.actual_point:'';
+  };
   // код точки для подсчёта итогов — берём из данных, а не разбираем текст клетки
   const planCode=(u,dt)=>{const r=_sch[u.id+'|'+dt];return r?r.planned_point:null};
   const factCode=(u,dt)=>{const r=_sch[u.id+'|'+dt];return r?r.actual_point:null};
@@ -2751,7 +4622,7 @@ window.schExportExcel=function(){
   // ── Свод: смены по типам + расхождение план/факт ──
   const aoa=[['СВОД ПО СМЕНАМ · '+_schShop+' · '+title],[],
     ['Сотрудник','Должность',...SCH_TYPES.map(t=>t.name),
-     'Смен по плану','Смен подтверждено','Невыходов','Вне графика','СМЕН К ОПЛАТЕ']];
+     'Смен по плану','Смен подтверждено','Невыходов','Вне графика','СМЕН К ОПЛАТЕ','Часов']];
   users.forEach(u=>{
     const cnt={},row=[];let plan=0,fact=0,miss=0,extra=0,weighted=0;
     SCH_TYPES.forEach(t=>cnt[t.code]=0);
@@ -2766,12 +4637,20 @@ window.schExportExcel=function(){
       if(!hasPlan&&r.actual_point)extra++;
     });
     SCH_TYPES.forEach(t=>row.push(cnt[t.code]||''));
-    aoa.push([u.name,rm[u.role]||u.role,...row,plan,fact,miss||'',extra||'',weighted]);
+    // Раннеру смены к оплате считаем по отметкам прихода-ухода, а не по
+    // клеткам графика: полсмены — это 0,6875, а не единица.
+    let toPay=weighted, hours='';
+    if(u.role==='runner'){
+      const rt=schRunTotal(u.id);
+      toPay=Math.round(rt.shifts*10000)/10000;
+      hours=Math.round(rt.min/60*100)/100;
+    }
+    aoa.push([u.name,rm[u.role]||u.role,...row,plan,fact,miss||'',extra||'',toPay,hours]);
   });
   const ws=XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols']=[{wch:26},{wch:14},...SCH_TYPES.map(t=>({wch:Math.max(11,t.name.length+2)})),
-    {wch:14},{wch:18},{wch:12},{wch:13},{wch:16}];
-  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:SCH_TYPES.length+6}}];
+    {wch:14},{wch:18},{wch:12},{wch:13},{wch:16},{wch:9}];
+  ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:SCH_TYPES.length+7}}];
   XLSX.utils.book_append_sheet(wb,ws,'Свод');
 
   XLSX.writeFile(wb,'FBSM_Табель_'+_schShop+'_'+_schMk+'.xlsx');
@@ -2968,7 +4847,7 @@ window.queueApprove=async function(extId,btn){
       body:JSON.stringify({status:'approved',uid:res.id,sugg_role:role,sugg_shop:shop,
         decided_at:new Date().toISOString(),decided_by:CU.name})});
     logAction('queueApprove',r.name,null,{ext_id:extId,role,shop,uid:res.id});
-    USERS=await api('getUsers');
+    USERS=await api('getUsers');refreshShops();
   }catch(e){L(false);if(btn)btn.disabled=false;alert('Не удалось: '+e.message);return}
   L(false);
   pgQueue();queueBadge();
@@ -3056,7 +4935,7 @@ window.confirmDay=async function(date,btn){
     // графике. На человека просто оформили возврат его прежней продажи,
     // работать в этот день он мог и не выходить.
     const retOnly=(+r.sales||0)===0&&(+r.checks||0)===0&&(+(r.returns||0))>0;
-    if(!retOnly) schMarkActual(CU.id,date,CU.shop).catch(e=>console.warn('График:',e));
+    if(!retOnly) schMarkActual(CU.id,date,CU.shop).catch(e=>schMarkFailed(CU.id,date,e.message));
     _sales=await api('getSales',{uid:CU.id});
   }catch(e){ L(false); if(btn)btn.disabled=false; alert('Не удалось подтвердить: '+e.message); return; }
   L(false);
@@ -3273,17 +5152,23 @@ function schSayGuard(g,saved,date){
 }
 // Автоотметка факта смены по дате ввода продаж.
 // Точка берётся из плана, если он есть; иначе — точка магазина.
-async function schMarkActual(uid,date,shop){
+// Если отметку поставить не удалось, день будет оплачен, но в табеле
+// его не будет. Молчать об этом нельзя — пишем в журнал, там это
+// увидит администратор.
+async function schMarkFailed(uid,date,why){
+  try{ logAction('schMarkFailed',uid,date,{why:String(why).slice(0,200)}); }catch(e){}
+}
+async function schMarkActual(uid,date,shop,src){
   await schLoadRefs();
   const rows=await schFetch('/schedule?select=*&uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+date);
   const prev=(rows&&rows[0])||null;
   const own=schPointOfShop(shop);
   const pt=(prev&&prev.planned_point)||(own?own.code:null);
-  if(!pt)return;
+  if(!pt){ schMarkFailed(uid,date,'у магазина «'+(shop||'?')+'» нет точки в справочнике'); return; }
   await schFetch('/schedule',{method:'POST',
     headers:{'Prefer':'resolution=merge-duplicates'},
     body:JSON.stringify([{uid:String(uid),date,shop:shop||null,
-      planned_point:prev?prev.planned_point:null,actual_point:pt,actual_source:'sales',
+      planned_point:prev?prev.planned_point:null,actual_point:pt,actual_source:src||'sales',
       shift_type:prev?prev.shift_type:'full',updated_by:CU?CU.name:null}])});
 }
 
