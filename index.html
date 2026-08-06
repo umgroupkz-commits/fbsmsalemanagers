@@ -202,9 +202,12 @@ let SHOPS=['Караганда','Алматы','Асфендиярова','Ма�
 // к списку, а не заменяют его: заведённый человек не должен потеряться.
 function refreshShops(){
   const listed=String(PARAMS.shopsList||'').split(',').map(s=>s.trim()).filter(Boolean);
-  const fromUsers=(USERS||[]).map(u=>u.shop).filter(Boolean);
+  const fromUsers=(USERS||[]).map(u=>u.shop).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+  // Порядок — как в списке: он же задаёт порядок колонок в дашборде и
+  // строк в сводке. Магазины впереди, Outlet и интернет-магазин в конце —
+  // вперемешку их читать неудобно. Меняется перетаскиванием строк в поле.
   const all=[...new Set(listed.concat(fromUsers))];
-  if(all.length) SHOPS=all.sort((a,b)=>a.localeCompare(b));
+  if(all.length) SHOPS=all;
 }
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
@@ -1438,11 +1441,11 @@ window.loadPayroll=async function(forceRefresh){
 
   window._payrollRows=[]; // сброс для экспорта
   // Подтянуть правки 1С по уже подтверждённым дням до того, как считать
-  const resynced=await syncConfirmed(sellers.map(u=>u.id));
+  const resynced=await syncConfirmed(sellers.map(u=>u.id),mk);
   if(stale())return;
   if(resynced){ _sales=(await api('getBundle',{mk,needShopStats:1})).sales; }
-  await schLoadWeights(mk,sellers.map(u=>u.id)); // ГРАФИК: коэффициенты смен
-  await loadUnsigned(mk);   // чей график за месяц никто не подписал
+  // Веса смен и подписи друг от друга не зависят — незачем ждать по очереди.
+  await Promise.all([schLoadWeights(mk,sellers.map(u=>u.id)), loadUnsigned(mk)]);
   if(stale())return;
 
   const byShop={};
@@ -1582,10 +1585,11 @@ window.loadPayroll=async function(forceRefresh){
     mgrHtml+='</table></div></div>';
     html+=mgrHtml;
   }
-  html=await payrollVsSchedule(mk,sellers)+html;
-  html+=streamerPayrollHtml(mk,adjMap);
-  html+=await runnerPayrollHtml(mk,adjMap);
-  html+=await signatureWarnHtml(mk);
+  // Три хвостовых блока считаются независимо: раньше их ждали по очереди,
+  // и на медленной связи это были лишние секунды на пустом месте.
+  const [warn,clocks,sign]=await Promise.all([
+    payrollVsSchedule(mk,sellers), runnerPayrollHtml(mk,adjMap), signatureWarnHtml(mk)]);
+  html=warn+html+streamerPayrollHtml(mk,adjMap)+clocks+sign;
   if(stale())return;
   document.getElementById('payBody').innerHTML=html;
 }
@@ -3036,8 +3040,9 @@ async function payrollVsSchedule(mk,sellers){
 // Управляющему — свой магазин, администратору — все.
 function rptShops(){
   // Склад и офис не торгуют: пустая строка с нулями в сводке продаж
-  // только сбивает глаз.
-  return CU.role==='admin'||CU.role==='accountant'?SHOPS.filter(isTradeShop):[CU.shop];
+  // только сбивает глаз. Порядок — как в списке подразделений.
+  if(CU.role!=='admin'&&CU.role!=='accountant') return [CU.shop];
+  return SHOPS.filter(isTradeShop);
 }
 
 window.pgReportHist=async function(){
@@ -4242,6 +4247,38 @@ window.exportPayrollExcel=function(){
 const SB_REST=API.replace('/functions/v1/api','/rest/v1');
 const SCH_DOW=['вс','пн','вт','ср','чт','пт','сб'];
 let SCH_POINTS=[],SCH_TYPES=[],_sch={},_schMk=null,_schShop=null;
+// Какие подразделения показаны в графике. Гл. админу их обычно нужно
+// несколько сразу — офис, склад и Outlet, например, — а не одно из
+// списка. Выбор запоминается: возвращаться к нему каждый раз мучительно.
+let _schPicked=null, _schBodyId='sch-body', _schAlertId='sch-alert';
+function schPickKey(){ return 'fbsm.sched.shops.'+((CU&&CU.id)||'x'); }
+function schPicked(){
+  const all=schShops();
+  if(_schPicked===null){
+    let saved=null;
+    try{ saved=JSON.parse(localStorage.getItem(schPickKey())||'null'); }catch(e){}
+    _schPicked=Array.isArray(saved)?saved.filter(x=>all.indexOf(x)>=0):null;
+  }
+  if(!_schPicked||!_schPicked.length) _schPicked=all.slice(0,1);
+  // Порядок — как в списке подразделений, а не как нащёлкали.
+  return all.filter(x=>_schPicked.indexOf(x)>=0);
+}
+window.schShopPick=function(shop,on){
+  const cur=new Set(schPicked());
+  on?cur.add(shop):cur.delete(shop);
+  _schPicked=[...cur];
+  if(!_schPicked.length){ _schPicked=[shop]; const el=document.getElementById('schp-'+cssId(shop)); if(el)el.checked=true; }
+  try{ localStorage.setItem(schPickKey(),JSON.stringify(_schPicked)); }catch(e){}
+  schRender();
+}
+window.schShopPickAll=function(mode){
+  const all=schShops();
+  _schPicked = mode==='all' ? all.slice() : all.filter(isTradeShop);
+  try{ localStorage.setItem(schPickKey(),JSON.stringify(_schPicked)); }catch(e){}
+  pgSchedule();
+}
+// id из названия точки: в нём бывают пробелы и дефисы.
+const cssId=s=>String(s).replace(/[^a-zA-Zа-яА-Я0-9]/g,'_');
 
 // Чтение идёт напрямую в базу публичным ключом — он на то и публичный.
 // Запись — только через сервер: ключ лежит в исходнике страницы, и пока
@@ -4359,28 +4396,32 @@ window.pgSchedule=async function(){
   L(false);
   const shops=schShops();
   if(!_schMk)_schMk=curMk();
-  if(!_schShop||!shops.includes(_schShop))_schShop=shops[0];
+  const picked=schPicked();
+  if(!_schShop||!shops.includes(_schShop))_schShop=picked[0]||shops[0];
   setContent(`<div class="card">
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
         <select id="sch-mk" class="fc" style="width:auto" onchange="schOnFilter()">${monthsOpts(4,3)}</select>
         ${shops.length>1
-          ?`<select id="sch-shop" class="fc" style="width:auto" onchange="schOnFilter()">${shops.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>`
+          ?`<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+              ${shops.map(s=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;white-space:nowrap;cursor:pointer">
+                <input type="checkbox" id="schp-${cssId(s)}" ${picked.indexOf(s)>=0?'checked':''}
+                  onchange="schShopPick('${s.replace(/'/g,"\\'")}',this.checked)"> ${esc(s)}</label>`).join('')}
+              <button class="btn bsm" onclick="schShopPickAll('all')">все</button>
+              <button class="btn bsm" onclick="schShopPickAll('trade')">только торговые</button>
+            </div>`
           :`<b style="font-size:15px">${shops[0]||'—'}</b>`}
         <div style="flex:1"></div>
         <span style="font-size:12px;color:var(--muted)">Клик по клетке — поставить смену</span>
         <button class="btn bsm" onclick="schExportExcel()">📥 Табель в Excel</button>
       </div>
     </div>
-    <div id="sch-alert"></div>
-    <div class="card" id="sch-body"><div class="spin" style="margin:1rem auto;display:block"></div></div>`);
+    <div id="sch-all"></div>`);
   const a=document.getElementById('sch-mk');if(a)a.value=_schMk;
-  const b=document.getElementById('sch-shop');if(b)b.value=_schShop;
   await schRender();
 }
 
 window.schOnFilter=async function(){
   _schMk=document.getElementById('sch-mk').value;
-  const s=document.getElementById('sch-shop');if(s)_schShop=s.value;
   await schRender();
 }
 
@@ -4449,13 +4490,32 @@ async function schLoadRunners(mk,users){
 }
 function schRunTotal(uid){ return _schRun[uid]||{days:{},min:0,shifts:0}; }
 
+// Каждое выбранное подразделение рисуется своим блоком: таблица графика
+// у них разная по составу людей и точек, и склеить их в одну нельзя.
 async function schRender(){
-  const body=document.getElementById('sch-body'),box=document.getElementById('sch-alert');
+  const host=document.getElementById('sch-all');
+  if(!host) return schRenderShop();
+  const list=schPicked();
+  host.innerHTML=list.map((sh,i)=>
+    '<div style="margin-top:1rem">'
+    +(list.length>1?'<div class="ct" style="margin-bottom:.4rem">'+esc(sh)+'</div>':'')
+    +'<div id="scha-'+i+'"></div>'
+    +'<div class="card" id="schb-'+i+'"><div class="spin" style="margin:1rem auto;display:block"></div></div>'
+    +'</div>').join('');
+  for(let i=0;i<list.length;i++){
+    _schShop=list[i]; _schBodyId='schb-'+i; _schAlertId='scha-'+i;
+    await schRenderShop();
+  }
+  _schBodyId='sch-body'; _schAlertId='sch-alert';
+}
+
+async function schRenderShop(){
+  const body=document.getElementById(_schBodyId),box=document.getElementById(_schAlertId);
   if(!body)return;
   body.innerHTML='<div class="spin" style="margin:1rem auto;display:block"></div>';
   const users=schVisibleUsers(_schShop);
   if(!users.length){
-    body.innerHTML='<div class="card">В магазине «'+_schShop+'» нет сотрудников.</div>';
+    body.innerHTML='<div style="color:var(--muted)">В подразделении «'+_schShop+'» нет сотрудников.</div>';
     if(box)box.innerHTML='';return;
   }
   try{_sch=await schLoad(_schMk,users.map(u=>u.id)); await schLoadRunners(_schMk,users);}
@@ -5022,12 +5082,18 @@ window.confirmDay=async function(date,btn){
 // соответствовать 1С. Повторно дёргать его незачем.
 //
 // Закрытые месяцы не трогаем: там зарплата уже выдана.
-async function syncConfirmed(uids){
+// Месяц, за который переносим правки 1С. Ставится перед вызовом.
+let _syncMk=null;
+async function syncConfirmed(uids,mk){
+  _syncMk=mk||curMk();
   if(!uids||!uids.length)return 0;
   let rows;
   try{
+    // Только показываемый месяц: тащить всю историю ради трёх изменившихся
+    // дней — это лишние сотни строк на каждом открытии начисления.
     rows=await schFetch('/sales_pending?select=*&confirmed_at=not.is.null&uid=in.'
-      +encodeURIComponent(schInList(uids)));
+      +encodeURIComponent(schInList(uids))
+      +'&date=gte.'+_syncMk+'-01&date=lte.'+_syncMk+'-31');
   }catch(e){ return 0; }
   const stale=(rows||[]).filter(r=>{
     if(!r.src_updated_at||!r.confirmed_at)return false;
@@ -5035,7 +5101,12 @@ async function syncConfirmed(uids){
     return Date.parse(r.src_updated_at)>Date.parse(r.confirmed_at);
   });
   let done=0;
-  for(const r of stale){
+  // Пачками по шесть: на десятке изменившихся дней это разница между
+  // тремя секундами и половиной секунды, а сервер столько держит легко.
+  const chunks=[];
+  for(let i=0;i<stale.length;i+=6) chunks.push(stale.slice(i,i+6));
+  for(const chunk of chunks){
+  await Promise.all(chunk.map(async r=>{
     const date=normDate(r.date);
     try{
       await apiPost('saveSale',{uid:r.uid,date,
@@ -5046,6 +5117,7 @@ async function syncConfirmed(uids){
       logAction('resyncFrom1C',r.uid,date,{sales:+r.sales||0,checks:+r.checks||0,units:+r.units||0});
       done++;
     }catch(e){ console.warn('Пересинхронизация',date,e); }
+  }));
   }
   return done;
 }
