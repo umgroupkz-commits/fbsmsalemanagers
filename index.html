@@ -210,7 +210,7 @@ function refreshShops(){
   const all=[...new Set(listed.concat(fromUsers))];
   if(all.length) SHOPS=all;
 }
-const APP_VERSION='2026-08-06 · 8';
+const APP_VERSION='2026-08-07 · 1';
 let CU=null,PARAMS={},USERS=[],_sales=[],_plans=[];
 
 // ══ API (Supabase Edge Function) ══
@@ -4598,10 +4598,25 @@ function schRunTotal(uid){ return _schRun[uid]||{days:{},min:0,shifts:0}; }
 
 // Каждое выбранное подразделение рисуется своим блоком: таблица графика
 // у них разная по составу людей и точек, и склеить их в одну нельзя.
+// Перерисовать один блок из уже загруженных данных — без сети.
+// Именно этого не хватало: после клика по клетке перерисовывались все
+// девять подразделений, по три запроса на каждое.
+async function schRepaint(shop){
+  const list=schPicked(), i=list.indexOf(shop);
+  if(i<0||!document.getElementById('schb-'+i))return schRender();
+  const bId=_schBodyId, aId=_schAlertId, sh=_schShop;
+  _schShop=shop; _schBodyId='schb-'+i; _schAlertId='scha-'+i;
+  await schRenderShop(undefined,true);
+  _schShop=sh; _schBodyId=bId; _schAlertId=aId;
+}
+
 // Перерисовку запускает каждая галочка. Пока идёт одна, могла начаться
 // вторая — и два прохода наперегонки писали в общий _schShop. В итоге
 // под Карагандой оказывалась тревога про астанинскую точку, а сотрудники
 // одного магазина — в блоке другого. Метка поколения гасит опоздавших.
+// Данные графика по подразделениям. Раньше _sch перетирался на каждом
+// блоке, поэтому перерисовать один блок без похода в сеть было нельзя.
+let _schByShop={};
 let _schGen=0;
 async function schRender(){
   const gen=++_schGen;
@@ -4623,7 +4638,7 @@ async function schRender(){
   _schBodyId='sch-body'; _schAlertId='sch-alert';
 }
 
-async function schRenderShop(gen){
+async function schRenderShop(gen,keep){
   const body=document.getElementById(_schBodyId),box=document.getElementById(_schAlertId);
   // Подразделение запоминаем на входе: пока идут запросы, глобальное
   // значение может смениться, и блок оказался бы про чужой магазин.
@@ -4636,8 +4651,16 @@ async function schRenderShop(gen){
     body.innerHTML='<div style="color:var(--muted)">В подразделении «'+shop+'» нет сотрудников.</div>';
     if(box)box.innerHTML='';return;
   }
-  try{_sch=await schLoad(_schMk,users.map(u=>u.id)); await schLoadRunners(_schMk,users);}
-  catch(e){body.innerHTML='<div class="alert ae">'+e.message+'</div>';return}
+  if(keep&&_schByShop[shop+'|'+_schMk]){
+    // Перерисовка после клика: данные уже в памяти, идти в сеть незачем.
+    _sch=_schByShop[shop+'|'+_schMk];
+  }else{
+    try{
+      _sch=await schLoad(_schMk,users.map(u=>u.id));
+      _schByShop[shop+'|'+_schMk]=_sch;
+      await schLoadRunners(_schMk,users);
+    }catch(e){body.innerHTML='<div class="alert ae">'+e.message+'</div>';return}
+  }
 
   const days=[];
   for(let d=1;d<=daysInMk(_schMk);d++)days.push(_schMk+'-'+String(d).padStart(2,'0'));
@@ -4734,7 +4757,12 @@ window.schOpen=function(uid,dt){
   const u=USERS.find(x=>String(x.id)===String(uid));
   const r=_sch[uid+'|'+dt]||null;
   const pts=schPointsForShop(u?u.shop:_schShop);
-  const curP=r?r.planned_point:null,curT=r?r.shift_type:'full';
+  // У нового сотрудника прошлой записи нет, и раньше не выбиралось
+  // ничего — «Сохранить» отвечало «Выберите точку». Подставляем точку
+  // его подразделения: в девяти случаях из десяти она и нужна.
+  const own=schPointOfShop(u?u.shop:_schShop);
+  const curP=(r&&r.planned_point)||(own?own.code:(pts[0]?pts[0].code:null));
+  const curT=r?r.shift_type:'full';
   const d=new Date(dt+'T00:00:00');
   const ov=document.createElement('div');ov.className='ov';ov.id='sch-ov';
   ov.innerHTML=`<div class="ovc" style="max-width:430px">
@@ -4804,15 +4832,30 @@ window.schSave=async function(uid,dt){
         planned_point:pCode,actual_point:prev.actual_point||null,
         actual_source:prev.actual_source||null,shift_type:t.code,updated_by:CU.name}])});
   }catch(e){L(false);alert(e.message);return}
-  L(false);ov.remove();await schRender();
+  // Записываем результат в память и перерисовываем один блок. Раньше
+  // здесь шла полная перезагрузка графика: девять блоков, десяток секунд
+  // и моргание всей страницы ради одной появившейся точки.
+  const shopOf=u?u.shop:_schShop;
+  const cache=_schByShop[shopOf+'|'+_schMk];
+  const row={uid:String(uid),date:dt,shop:shopOf,planned_point:pCode,
+    actual_point:prev.actual_point||null,actual_source:prev.actual_source||null,
+    shift_type:t.code,updated_by:CU.name};
+  if(cache)cache[uid+'|'+dt]=row;
+  _sch[uid+'|'+dt]=row;
+  L(false);ov.remove();await schRepaint(shopOf);
 }
 window.schClear=async function(uid,dt){
   L(true);
   try{await schFetch('/schedule?uid=eq.'+encodeURIComponent(uid)+'&date=eq.'+dt,{method:'DELETE'})}
   catch(e){L(false);alert(e.message);return}
+  const uDel=USERS.find(x=>String(x.id)===String(uid));
+  const shopDel=uDel?uDel.shop:_schShop;
+  const cacheDel=_schByShop[shopDel+'|'+_schMk];
+  if(cacheDel)delete cacheDel[uid+'|'+dt];
+  delete _sch[uid+'|'+dt];
   L(false);
   const ov=document.getElementById('sch-ov');if(ov)ov.remove();
-  await schRender();
+  await schRepaint(shopDel);
 }
 
 // ── ЭКСПОРТ ТАБЕЛЯ ────────────────────────────────────────────────
